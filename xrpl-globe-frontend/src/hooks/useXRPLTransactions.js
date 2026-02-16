@@ -1,0 +1,125 @@
+import { useState, useEffect, useRef } from 'react';
+
+const MAX_TRANSACTIONS = 50; // Keep last 50 for visual trails
+
+export function useXRPLTransactions(url) {
+  const [transactions, setTransactions] = useState([]);
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectionError, setConnectionError] = useState(null);
+  const ws = useRef(null);
+  const reconnectTimer = useRef(null);
+  const reconnectAttempts = useRef(0);
+  const maxReconnectDelay = 30000; // 30 seconds
+
+  useEffect(() => {
+    let isUnmounted = false;
+
+    function checkBackendReady() {
+      return fetch('http://localhost:8080/health')
+        .then(res => res.ok)
+        .catch(() => false);
+    }
+
+    function connect() {
+      if (isUnmounted) return;
+      if (ws.current && ws.current.readyState === WebSocket.OPEN) return;
+
+      try {
+        ws.current = new WebSocket(url);
+        setConnectionError(null);
+
+        ws.current.onopen = () => {
+          console.log('Connected to XRPL Stream');
+          setIsConnected(true);
+          reconnectAttempts.current = 0; // Reset on successful connection
+        };
+
+        ws.current.onmessage = (event) => {
+          try {
+            const tx = JSON.parse(event.data);
+            const sourceGeo = tx.source_info || tx.sourceInfo;
+            const destGeo = tx.dest_info || tx.destInfo;
+
+            if (sourceGeo && destGeo) {
+              setTransactions(prev => {
+                const newTx = {
+                  id: tx.hash,
+                  startLat: sourceGeo.latitude,
+                  startLng: sourceGeo.longitude,
+                  endLat: destGeo.latitude,
+                  endLng: destGeo.longitude,
+                  color: getTransactionColor(tx.transaction_type),
+                  amount: tx.amount,
+                  type: tx.transaction_type
+                };
+                // Add new tx to top, keep list size manageable
+                return [newTx, ...prev].slice(0, MAX_TRANSACTIONS);
+              });
+            } else {
+              console.warn("Transaction missing geolocation data:", tx);
+            }
+          } catch (e) {
+            console.error("Error parsing transaction:", e);
+            setConnectionError(`Failed to parse transaction: ${e.message}`);
+          }
+        };
+
+        ws.current.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          setConnectionError('WebSocket connection error');
+        };
+
+        ws.current.onclose = (event) => {
+          if (isUnmounted) return;
+          console.log(`Disconnected from XRPL Stream. Code: ${event.code}, Reason: ${event.reason}`);
+          setIsConnected(false);
+
+          // Exponential backoff for reconnection
+          reconnectAttempts.current++;
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), maxReconnectDelay);
+          console.log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current})`);
+          reconnectTimer.current = setTimeout(connect, delay);
+        };
+
+      } catch (error) {
+        console.error('Failed to create WebSocket connection:', error);
+        setConnectionError(`Failed to create WebSocket: ${error.message}`);
+        // Still try to reconnect
+        reconnectAttempts.current++;
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), maxReconnectDelay);
+        reconnectTimer.current = setTimeout(connect, delay);
+      }
+    }
+
+    // Wait for backend to be ready before connecting
+    const initConnection = async () => {
+      let ready = await checkBackendReady();
+      while (!ready) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        ready = await checkBackendReady();
+      }
+      connect();
+    };
+
+    initConnection();
+
+    return () => {
+      isUnmounted = true;
+      if (reconnectTimer.current) {
+        clearTimeout(reconnectTimer.current);
+      }
+      if (ws.current) ws.current.close();
+    };
+  }, [url]);
+
+  return { transactions, isConnected, connectionError };
+}
+
+function getTransactionColor(type) {
+  switch (type) {
+    case 'Payment': return '#00FF00'; // Green
+    case 'OfferCreate': return '#0000FF'; // Blue
+    case 'TrustSet': return '#FF0000'; // Red
+    default: return '#FFFFFF'; // White
+  }
+}

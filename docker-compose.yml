@@ -1,0 +1,14 @@
+services:
+  # The XRPL Node
+  rippled:
+    image: xrpllabsofficial/xrpld:latest
+    container_name: rippled-server
+    platform: linux/amd64
+    ports:
+      - "5005:5005" # JSON-RPC
+      - "6006:6006" # WebSocket
+      - "51235:51235" # Peer Port
+    volumes:
+      - ./xrpl-node/config:/etc/opt/ripple
+      - ./xrpl-node/db:/var/lib/rippled
+    restart: unless-stopped
