@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/brandon/xrpl-validator-service/internal/models"
@@ -87,18 +88,32 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 	if validator.Domain == "" {
 		return fmt.Errorf("no domain available for geolocation")
 	}
-
-	// Extract IP from domain
-	ips, err := net.LookupIP(validator.Domain)
-	if err != nil || len(ips) == 0 {
-		p.logger.WithError(err).WithField("domain", validator.Domain).Warn("Failed to resolve domain")
-		return fmt.Errorf("failed to resolve domain %s: %w", validator.Domain, err)
+	domain := strings.TrimSpace(validator.Domain)
+	domain = strings.TrimSuffix(domain, ".")
+	if host, _, err := net.SplitHostPort(domain); err == nil {
+		domain = host
 	}
 
-	ip := ips[0].String()
+	// Extract IP from domain
+	ips, err := net.LookupIP(domain)
+	if err != nil || len(ips) == 0 {
+		p.logger.WithError(err).WithField("domain", domain).Warn("Failed to resolve domain")
+		return fmt.Errorf("failed to resolve domain %s: %w", domain, err)
+	}
+
+	ip := ""
+	for _, candidate := range ips {
+		if candidate.To4() != nil {
+			ip = candidate.String()
+			break
+		}
+	}
+	if ip == "" {
+		ip = ips[0].String()
+	}
 
 	// Query IP geolocation API
-	url := fmt.Sprintf("http://ip-api.com/json/%s", ip)
+	url := fmt.Sprintf("https://ipwho.is/%s", ip)
 	resp, err := p.client.Get(url)
 	if err != nil {
 		p.logger.WithError(err).WithField("ip", ip).Warn("Failed to query geolocation API")
@@ -111,7 +126,8 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 	}
 
 	var result struct {
-		Status      string  `json:"status"`
+		Success     bool    `json:"success"`
+		Message     string  `json:"message"`
 		CountryCode string  `json:"countryCode"`
 		City        string  `json:"city"`
 		Lat         float64 `json:"lat"`
@@ -123,8 +139,8 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 		return fmt.Errorf("failed to parse geolocation response: %w", err)
 	}
 
-	if result.Status != "success" {
-		return fmt.Errorf("geolocation API returned status: %s", result.Status)
+	if !result.Success {
+		return fmt.Errorf("geolocation API failed: %s", result.Message)
 	}
 
 	validator.Latitude = result.Lat
@@ -133,7 +149,7 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 	validator.City = result.City
 
 	p.logger.WithFields(logrus.Fields{
-		"domain":  validator.Domain,
+		"domain":  domain,
 		"ip":      ip,
 		"city":    result.City,
 		"country": result.CountryCode,

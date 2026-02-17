@@ -48,6 +48,7 @@ type Client struct {
 	wsConn         *websocket.Conn
 	httpClient     *http.Client
 	logger         *logrus.Logger
+	callbacks      []func(interface{})
 	mu             sync.RWMutex
 	connected      bool
 	reconnectCount int
@@ -65,6 +66,7 @@ func NewClient(jsonRPCURL, websocketURL string, logger *logrus.Logger) *Client {
 		websocketURL:  websocketURL,
 		httpClient:    &http.Client{Timeout: 15 * time.Second},
 		logger:        logger,
+		callbacks:     make([]func(interface{}), 0),
 		maxReconnects: 10,
 		backoffTime:   time.Second,
 	}
@@ -172,6 +174,9 @@ func (c *Client) Subscribe(ctx context.Context, streams []string, callback func(
 	}
 
 	c.mu.Lock()
+	if callback != nil {
+		c.callbacks = append(c.callbacks, callback)
+	}
 	if err := c.wsConn.WriteJSON(cmd); err != nil {
 		c.mu.Unlock()
 		c.logger.WithError(err).Error("Failed to send subscribe command")
@@ -236,7 +241,15 @@ func (c *Client) readLoop() {
 			break
 		}
 
-		// Process message (will be enhanced with subscription callbacks)
-		c.logger.WithField("message", msg).Debug("Received WebSocket message")
+		c.mu.RLock()
+		callbacks := make([]func(interface{}), len(c.callbacks))
+		copy(callbacks, c.callbacks)
+		c.mu.RUnlock()
+
+		for _, callback := range callbacks {
+			if callback != nil {
+				callback(msg)
+			}
+		}
 	}
 }

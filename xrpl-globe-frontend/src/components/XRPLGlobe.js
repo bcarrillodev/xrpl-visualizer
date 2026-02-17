@@ -1,16 +1,25 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Globe from "react-globe.gl";
 import { useXRPLTransactions } from "../hooks/useXRPLTransactions";
+import { useNetworkHealth } from "../hooks/useNetworkHealth";
+
+const MODE = {
+  FLOW: "flow",
+  HEALTH: "health",
+};
 
 const XRPLGlobe = () => {
   const globeEl = useRef();
+  const [mode, setMode] = useState(MODE.FLOW);
   const [validators, setValidators] = useState([]);
   const [fetchError, setFetchError] = useState(null);
+  const [minPaymentXRP, setMinPaymentXRP] = useState(10000);
+
   const { transactions, isConnected, connectionError } = useXRPLTransactions(
     "ws://localhost:8080/transactions",
   );
+  const { networkHealth, networkHealthError } = useNetworkHealth();
 
-  // Fetch Validators (Static Data)
   useEffect(() => {
     let isMounted = true;
 
@@ -25,7 +34,6 @@ const XRPLGlobe = () => {
         .then((data) => {
           if (!isMounted) return;
 
-          // Filter out validators with missing geo data (0,0)
           const validNodes = data.validators.filter(
             (v) => v.latitude !== 0 || v.longitude !== 0,
           );
@@ -48,13 +56,52 @@ const XRPLGlobe = () => {
     };
   }, []);
 
-  // Auto-rotate globe
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchHealth = async () => {
+      try {
+        const res = await fetch("http://localhost:8080/health");
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isMounted) return;
+        const drops = Number(data.min_payment_drops || 10000000000);
+        setMinPaymentXRP(drops / 1_000_000);
+      } catch (err) {
+        console.error("Failed to fetch backend health:", err);
+      }
+    };
+
+    fetchHealth();
+    const id = setInterval(fetchHealth, 10000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(id);
+    };
+  }, []);
+
   useEffect(() => {
     if (globeEl.current) {
       globeEl.current.controls().autoRotate = true;
-      globeEl.current.controls().autoRotateSpeed = 0.5;
+      globeEl.current.controls().autoRotateSpeed = mode === MODE.FLOW ? 0.5 : 0.25;
     }
-  }, []);
+  }, [mode]);
+
+  const flowStats = useMemo(() => {
+    if (!transactions.length) {
+      return { totalXRP: 0, maxXRP: 0 };
+    }
+    const amounts = transactions
+      .map((tx) => Number(tx.amountXRP))
+      .filter((v) => Number.isFinite(v));
+    return {
+      totalXRP: amounts.reduce((acc, cur) => acc + cur, 0),
+      maxXRP: amounts.reduce((acc, cur) => Math.max(acc, cur), 0),
+    };
+  }, [transactions]);
+
+  const server = networkHealth?.server;
 
   return (
     <div style={{ position: "relative" }}>
@@ -63,38 +110,92 @@ const XRPLGlobe = () => {
           position: "absolute",
           top: 20,
           left: 20,
-          zIndex: 1,
+          zIndex: 2,
           color: "white",
           fontFamily: "monospace",
           pointerEvents: "none",
+          background: "rgba(0,0,0,0.55)",
+          padding: "10px 12px",
+          borderRadius: 8,
+          maxWidth: 360,
         }}
       >
         <h2>XRPL Live Visualizer</h2>
         <p>
-          Status:{" "}
-          <span style={{ color: isConnected ? "#0f0" : "#f00" }}>
-            {isConnected ? "LIVE" : "CONNECTING..."}
-          </span>
+          Status: <span style={{ color: isConnected ? "#0f0" : "#f00" }}>{isConnected ? "LIVE" : "CONNECTING..."}</span>
         </p>
+        <p>Mode: {mode === MODE.FLOW ? "Live Flow" : "Network Health"}</p>
         <p>Validators: {validators.length}</p>
-        <p>Recent Txs: {transactions.length}</p>
-        {connectionError && (
-          <p style={{ color: "#ff6b6b", fontSize: "12px" }}>
-            Connection Error: {connectionError}
-          </p>
+
+        {mode === MODE.FLOW && (
+          <>
+            <p>Recent Txs: {transactions.length}</p>
+            <p>Filter: Payments ≥ {minPaymentXRP.toLocaleString()} XRP</p>
+            <p>Total Visible Flow: {flowStats.totalXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
+            <p>Largest Visible Tx: {flowStats.maxXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
+          </>
         )}
-        {fetchError && (
-          <p style={{ color: "#ff6b6b", fontSize: "12px" }}>
-            Fetch Error: {fetchError}
-          </p>
+
+        {mode === MODE.HEALTH && (
+          <>
+            <p>Server State: {server?.server_state || "unknown"}</p>
+            <p>Ledger Index: {server?.ledger_index || 0}</p>
+            <p>Peers: {server?.peer_count || 0}</p>
+            <p>WebSocket Clients: {networkHealth?.websocket_clients || 0}</p>
+            <p>Tx Listener: {networkHealth?.transaction_listener_active ? "active" : "inactive"}</p>
+          </>
         )}
+
+        {connectionError && <p style={{ color: "#ff6b6b", fontSize: "12px" }}>Connection Error: {connectionError}</p>}
+        {fetchError && <p style={{ color: "#ff6b6b", fontSize: "12px" }}>Fetch Error: {fetchError}</p>}
+        {networkHealthError && <p style={{ color: "#ff6b6b", fontSize: "12px" }}>Network Health Error: {networkHealthError}</p>}
+      </div>
+
+      <div
+        style={{
+          position: "absolute",
+          top: 20,
+          right: 20,
+          zIndex: 2,
+          pointerEvents: "auto",
+          display: "flex",
+          gap: 8,
+        }}
+      >
+        <button
+          onClick={() => setMode(MODE.FLOW)}
+          style={{
+            border: "1px solid #66d9ff",
+            background: mode === MODE.FLOW ? "#66d9ff" : "rgba(0,0,0,0.4)",
+            color: mode === MODE.FLOW ? "#111" : "#66d9ff",
+            padding: "8px 12px",
+            borderRadius: 6,
+            fontFamily: "monospace",
+            cursor: "pointer",
+          }}
+        >
+          Live Flow
+        </button>
+        <button
+          onClick={() => setMode(MODE.HEALTH)}
+          style={{
+            border: "1px solid #f6ff00",
+            background: mode === MODE.HEALTH ? "#f6ff00" : "rgba(0,0,0,0.4)",
+            color: mode === MODE.HEALTH ? "#111" : "#f6ff00",
+            padding: "8px 12px",
+            borderRadius: 6,
+            fontFamily: "monospace",
+            cursor: "pointer",
+          }}
+        >
+          Network Health
+        </button>
       </div>
 
       <Globe
         ref={globeEl}
         globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
         backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
-        // Validators (Points)
         pointsData={validators}
         pointLat={(d) => d.latitude}
         pointLng={(d) => d.longitude}
@@ -104,13 +205,13 @@ const XRPLGlobe = () => {
           }
         }}
         pointColor={() => "#f6ff00"}
-        pointAltitude={0.02}
-        pointRadius={0.5}
+        pointAltitude={(d) => (mode === MODE.HEALTH && d.is_active ? 0.03 : 0.02)}
+        pointRadius={(d) => (mode === MODE.HEALTH && d.is_active ? 0.55 : 0.5)}
         pointLabel={(d) => `
-          <b>${d.city || "Unknown"}, ${d.country_code || "XX"}
+          <b>${d.name || d.address}</b><br/>
+          ${d.city || "Unknown"}, ${d.country_code || "XX"}
         `}
-        // Transactions (Arcs)
-        arcsData={transactions}
+        arcsData={mode === MODE.FLOW ? transactions : []}
         arcStartLat={(d) => d.startLat}
         arcStartLng={(d) => d.startLng}
         arcEndLat={(d) => d.endLat}
@@ -119,11 +220,11 @@ const XRPLGlobe = () => {
         arcDashLength={0.4}
         arcDashGap={2}
         arcDashInitialGap={1}
-        arcDashAnimateTime={2000}
-        arcStroke={0.5}
+        arcDashAnimateTime={1800}
+        arcStroke={(d) => d.stroke || 0.5}
         arcLabel={(d) => `
           <b>${d.type}</b><br/>
-          Amount: ${d.amount || "N/A"}<br/>
+          Amount: ${d.amountXRP != null ? `${d.amountXRP.toLocaleString()} XRP` : "N/A"}<br/>
           ${d.id}
         `}
       />

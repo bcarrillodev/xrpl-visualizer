@@ -48,8 +48,10 @@ export function useXRPLTransactions(url) {
                   startLng: sourceGeo.longitude,
                   endLat: destGeo.latitude,
                   endLng: destGeo.longitude,
-                  color: getTransactionColor(tx.transaction_type),
-                  amount: tx.amount,
+                  amountDrops: tx.amount,
+                  amountXRP: formatDropsToXRP(tx.amount),
+                  stroke: getAmountStroke(tx.amount),
+                  color: getAmountColor(tx.amount),
                   type: tx.transaction_type
                 };
                 // Add new tx to top, keep list size manageable
@@ -115,11 +117,24 @@ export function useXRPLTransactions(url) {
   return { transactions, isConnected, connectionError };
 }
 
-function getTransactionColor(type) {
-  switch (type) {
-    case 'Payment': return '#00FF00'; // Green
-    case 'OfferCreate': return '#0000FF'; // Blue
-    case 'TrustSet': return '#FF0000'; // Red
-    default: return '#FFFFFF'; // White
-  }
+function formatDropsToXRP(drops) {
+  const n = Number(drops);
+  if (!Number.isFinite(n)) return null;
+  return n / 1_000_000;
+}
+
+function getAmountStroke(drops) {
+  const xrp = formatDropsToXRP(drops);
+  if (xrp == null || xrp <= 0) return 0.4;
+  const normalized = Math.min(1, Math.log10(xrp) / 8);
+  return 0.4 + (normalized * 1.8);
+}
+
+function getAmountColor(drops) {
+  const xrp = formatDropsToXRP(drops);
+  if (xrp == null) return '#7fd3ff';
+  if (xrp >= 1_000_000) return '#ff365e';
+  if (xrp >= 100_000) return '#ff8a2a';
+  if (xrp >= 10_000) return '#ffdf2b';
+  return '#7fd3ff';
 }

@@ -124,6 +124,9 @@ func (s *Server) registerRoutes() {
 	// Validators endpoint
 	s.router.GET("/validators", s.handleGetValidators)
 
+	// Network health endpoint
+	s.router.GET("/network-health", s.handleNetworkHealth)
+
 	// Transactions WebSocket
 	s.router.GET("/transactions", s.handleTransactionsWebSocket)
 }
@@ -135,6 +138,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"validators_count":            len(s.validatorFetcher.GetValidators()),
 		"last_validator_update":       s.validatorFetcher.GetLastUpdate(),
 		"transaction_listener_active": s.transactionListener.IsSubscribed(),
+		"min_payment_drops":           s.transactionListener.MinPaymentDrops(),
 		"websocket_clients":           len(s.wsClients),
 	}
 	c.JSON(http.StatusOK, status)
@@ -147,6 +151,31 @@ func (s *Server) handleGetValidators(c *gin.Context) {
 		"validators": validators,
 		"count":      len(validators),
 		"timestamp":  s.validatorFetcher.GetLastUpdate(),
+	})
+}
+
+// handleNetworkHealth returns rippled consensus health data for visualization mode.
+func (s *Server) handleNetworkHealth(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	serverStatus, err := s.validatorFetcher.GetServerStatus(ctx)
+	if err != nil {
+		s.logger.WithError(err).Warn("Failed to fetch network health")
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"status": "degraded",
+			"error":  err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":                      "ok",
+		"server":                      serverStatus,
+		"validators_count":            len(s.validatorFetcher.GetValidators()),
+		"transaction_listener_active": s.transactionListener.IsSubscribed(),
+		"websocket_clients":           len(s.wsClients),
+		"timestamp":                   time.Now().Unix(),
 	})
 }
 

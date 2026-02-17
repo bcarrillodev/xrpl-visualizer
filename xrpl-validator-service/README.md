@@ -1,6 +1,6 @@
 # XRPL Validator Service
 
-A Go service that fetches verified validators from the XRP Ledger (Altnet testnet) and streams live transactions via WebSocket for Globe.GL visualization.
+A Go service that fetches verified validators from the XRP Ledger mainnet and streams live transactions via WebSocket for Globe.GL visualization.
 
 ## Features
 
@@ -64,9 +64,12 @@ services:
     environment:
       RIPPLED_JSON_RPC_URL: http://rippled:5005
       RIPPLED_WEBSOCKET_URL: ws://rippled:6006
+      XRPL_NETWORK: mainnet
       LISTEN_PORT: 8080
       LISTEN_ADDR: 0.0.0.0
       VALIDATOR_REFRESH_INTERVAL: 300
+      VALIDATOR_LIST_SITES: https://vl.ripple.com
+      MIN_PAYMENT_DROPS: 10000000000
       LOG_LEVEL: info
     container_name: xrpl-validator-service
     restart: unless-stopped
@@ -85,9 +88,12 @@ Configure via environment variables:
 |----------|---------|-------------|
 | `RIPPLED_JSON_RPC_URL` | `http://localhost:5005` | rippled JSON-RPC endpoint URL |
 | `RIPPLED_WEBSOCKET_URL` | `ws://localhost:6006` | rippled WebSocket endpoint URL |
+| `XRPL_NETWORK` | `mainnet` | Network label returned with validator data |
 | `LISTEN_ADDR` | `0.0.0.0` | HTTP server listen address |
 | `LISTEN_PORT` | `8080` | HTTP server listen port |
 | `VALIDATOR_REFRESH_INTERVAL` | `300` | Validator refresh interval in seconds |
+| `VALIDATOR_LIST_SITES` | `https://vl.ripple.com` | Comma-separated validator list source URLs |
+| `MIN_PAYMENT_DROPS` | `10000000000` | Minimum streamed payment amount in drops (10,000 XRP) |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 
 ## API Endpoints
@@ -132,7 +138,7 @@ Response:
       "public_key": "030E58B6B2B5C...",
       "domain": "example.com",
       "name": "Example Validator",
-      "network": "altnet",
+      "network": "mainnet",
       "latitude": 40.7128,
       "longitude": -74.0060,
       "country_code": "US",
@@ -150,7 +156,7 @@ Response:
 
 **GET /transactions** (WebSocket upgrade)
 
-Establishes a WebSocket connection for streaming live transactions.
+Establishes a WebSocket connection for streaming validated XRP `Payment` transactions where amount is at least `MIN_PAYMENT_DROPS` (default `10,000 XRP`).
 
 ```javascript
 // JavaScript example
@@ -163,7 +169,7 @@ ws.onmessage = (event) => {
   //   "hash": "...",
   //   "account": "rN7n7otQDd6FczFgLdlqXRrrfVPqjnKvVQ",
   //   "destination": "rLHzPsX6oXkzU9cRHEwKmMSWJfpJ9nE4VY",
-  //   "amount": "1000000",
+  //   "amount": "25000000000",
   //   "transaction_type": "Payment",
   //   "source_info": { "latitude": 40.7128, "longitude": -74.0060, ... },
   //   "dest_info": { "latitude": 51.5074, "longitude": -0.1278, ... },
@@ -247,6 +253,9 @@ go build ./cmd/validator-service
 
 ```bash
 RIPPLED_JSON_RPC_URL=http://localhost:5005 \
+XRPL_NETWORK=mainnet \
+VALIDATOR_LIST_SITES=https://vl.ripple.com \
+MIN_PAYMENT_DROPS=10000000000 \
 LISTEN_PORT=9000 \
 LOG_LEVEL=debug \
 ./validator-service

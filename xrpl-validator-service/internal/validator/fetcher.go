@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,8 @@ type Fetcher struct {
 	stopChan            chan struct{}
 	geolocationProvider GeoLocationProvider
 	maxValidators       int
+	validatorListSites  []string
+	network             string
 }
 
 // GeoLocationProvider defines the interface for geolocation enrichment
@@ -34,9 +37,22 @@ type GeoLocationProvider interface {
 }
 
 // NewFetcher creates a new validator fetcher
-func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geoProvider GeoLocationProvider, logger *logrus.Logger) *Fetcher {
+func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geoProvider GeoLocationProvider, validatorListSites []string, network string, logger *logrus.Logger) *Fetcher {
 	if logger == nil {
 		logger = logrus.New()
+	}
+	sites := make([]string, 0, len(validatorListSites))
+	for _, site := range validatorListSites {
+		trimmed := strings.TrimSpace(site)
+		if trimmed != "" {
+			sites = append(sites, trimmed)
+		}
+	}
+	if len(sites) == 0 {
+		sites = []string{"https://vl.ripple.com"}
+	}
+	if strings.TrimSpace(network) == "" {
+		network = "mainnet"
 	}
 	return &Fetcher{
 		client:              client,
@@ -46,6 +62,8 @@ func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geo
 		stopChan:            make(chan struct{}),
 		geolocationProvider: geoProvider,
 		maxValidators:       1000, // Limit to prevent memory exhaustion
+		validatorListSites:  sites,
+		network:             strings.ToLower(network),
 	}
 }
 
@@ -106,26 +124,11 @@ func (f *Fetcher) Fetch(ctx context.Context) error {
 	}
 
 	// Enrich validators with geolocation data
-	if noOp, ok := f.geolocationProvider.(*NoOpGeoLocationProvider); ok {
-		noOp.AssignDemoLocations(validators)
-	} else {
-		missingGeoValidators := make([]*models.Validator, 0)
-		for _, v := range validators {
-			if f.geolocationProvider != nil {
-				if err := f.geolocationProvider.EnrichValidator(v); err != nil {
-					f.logger.WithError(err).WithField("address", v.Address).Warn("Failed to enrich validator geolocation")
-				}
+	for _, v := range validators {
+		if f.geolocationProvider != nil {
+			if err := f.geolocationProvider.EnrichValidator(v); err != nil {
+				f.logger.WithError(err).WithField("address", v.Address).Warn("Failed to enrich validator geolocation")
 			}
-
-			if v.Latitude == 0 && v.Longitude == 0 {
-				missingGeoValidators = append(missingGeoValidators, v)
-			}
-		}
-
-		if len(missingGeoValidators) > 0 {
-			fallback := NewNoOpGeoLocationProvider(f.logger)
-			fallback.AssignDemoLocations(missingGeoValidators)
-			f.logger.WithField("count", len(missingGeoValidators)).Info("Applied demo geolocation fallback for validators without coordinates")
 		}
 	}
 
@@ -168,14 +171,68 @@ func (f *Fetcher) GetLastUpdate() time.Time {
 	return f.lastUpdate
 }
 
+// GetServerStatus retrieves current rippled server health information.
+func (f *Fetcher) GetServerStatus(ctx context.Context) (*models.ServerStatus, error) {
+	result, err := f.client.GetServerInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resultMap, ok := result.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unexpected server_info response format")
+	}
+	payload, ok := resultMap["result"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("missing server_info result payload")
+	}
+	info, ok := payload["info"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("missing server_info info payload")
+	}
+
+	status := &models.ServerStatus{
+		Connected:       true,
+		ServerState:     getString(info, "server_state"),
+		LedgerIndex:     uint32(getInt64(getMap(info, "validated_ledger"), "seq")),
+		NetworkID:       uint16(getInt64(info, "network_id")),
+		PeerCount:       int(getInt64(info, "peers")),
+		CompleteLedgers: getString(info, "complete_ledgers"),
+		Uptime:          getInt64(info, "uptime"),
+		LastSync:        time.Now().Unix(),
+	}
+
+	return status, nil
+}
+
+func getMap(parent map[string]interface{}, key string) map[string]interface{} {
+	value, ok := parent[key].(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	return value
+}
+
+func getString(parent map[string]interface{}, key string) string {
+	value, _ := parent[key].(string)
+	return value
+}
+
+func getInt64(parent map[string]interface{}, key string) int64 {
+	switch value := parent[key].(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case int:
+		return int64(value)
+	default:
+		return 0
+	}
+}
+
 // fetchValidatorList queries rippled for validator data
 func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
-	// For Altnet, fetch validator list from the validator list site
-	// The validator list site is configured in rippled's validators.txt
-	// For Altnet: https://vl.altnet.rippletest.net
-
-	validatorListURL := "https://vl.altnet.rippletest.net"
-
 	// Create HTTP client with timeout
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -183,78 +240,98 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 
 	var lastErr error
 	maxRetries := 3
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff
-			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			f.logger.WithFields(logrus.Fields{
-				"attempt": attempt,
-				"backoff": backoff,
-			}).Debug("Retrying validator list fetch")
-			select {
-			case <-time.After(backoff):
-			case <-ctx.Done():
-				return nil, ctx.Err()
+	for _, validatorListURL := range f.validatorListSites {
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			if attempt > 0 {
+				// Exponential backoff
+				backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+				f.logger.WithFields(logrus.Fields{
+					"attempt": attempt,
+					"backoff": backoff,
+					"url":     validatorListURL,
+				}).Debug("Retrying validator list fetch")
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
 			}
-		}
 
-		// Create HTTP request
-		req, err := http.NewRequestWithContext(ctx, "GET", validatorListURL, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-		req.Header.Set("Accept", "application/json")
+			// Create HTTP request
+			req, err := http.NewRequestWithContext(ctx, "GET", validatorListURL, nil)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create request: %w", err)
+			}
+			req.Header.Set("Accept", "application/json")
 
-		// Send request
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = fmt.Errorf("failed to fetch validator list: %w", err)
-			f.logger.WithError(err).WithField("attempt", attempt+1).Warn("Validator list fetch failed")
-			continue
-		}
-		defer resp.Body.Close()
+			// Send request
+			resp, err := client.Do(req)
+			if err != nil {
+				lastErr = fmt.Errorf("failed to fetch validator list: %w", err)
+				f.logger.WithError(err).WithFields(logrus.Fields{
+					"attempt": attempt + 1,
+					"url":     validatorListURL,
+				}).Warn("Validator list fetch failed")
+				continue
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				lastErr = fmt.Errorf("validator list site returned status %d", resp.StatusCode)
+				f.logger.WithFields(logrus.Fields{
+					"status":  resp.StatusCode,
+					"attempt": attempt + 1,
+					"url":     validatorListURL,
+				}).Warn("Validator list fetch failed with bad status")
+				continue
+			}
 
-		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("validator list site returned status %d", resp.StatusCode)
-			f.logger.WithFields(logrus.Fields{
-				"status":  resp.StatusCode,
-				"attempt": attempt + 1,
-			}).Warn("Validator list fetch failed with bad status")
-			continue
-		}
+			// Parse response
+			var result map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				resp.Body.Close()
+				lastErr = fmt.Errorf("failed to parse validator list: %w", err)
+				f.logger.WithError(err).WithFields(logrus.Fields{
+					"attempt": attempt + 1,
+					"url":     validatorListURL,
+				}).Warn("Validator list parse failed")
+				continue
+			}
+			resp.Body.Close()
 
-		// Parse response
-		var result map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			lastErr = fmt.Errorf("failed to parse validator list: %w", err)
-			f.logger.WithError(err).WithField("attempt", attempt+1).Warn("Validator list parse failed")
-			continue
-		}
+			// Decode the base64 blob containing the validator list
+			blobStr, ok := result["blob"].(string)
+			if !ok {
+				lastErr = fmt.Errorf("no blob field in validator list response")
+				f.logger.WithFields(logrus.Fields{
+					"attempt": attempt + 1,
+					"url":     validatorListURL,
+				}).Warn("No blob field in validator list response")
+				continue
+			}
 
-		// Decode the base64 blob containing the validator list
-		blobStr, ok := result["blob"].(string)
-		if !ok {
-			lastErr = fmt.Errorf("no blob field in validator list response")
-			f.logger.WithField("attempt", attempt+1).Warn("No blob field in validator list response")
-			continue
-		}
+			blobData, err := base64.StdEncoding.DecodeString(blobStr)
+			if err != nil {
+				lastErr = fmt.Errorf("failed to decode base64 blob: %w", err)
+				f.logger.WithError(err).WithFields(logrus.Fields{
+					"attempt": attempt + 1,
+					"url":     validatorListURL,
+				}).Warn("Base64 decode failed")
+				continue
+			}
 
-		blobData, err := base64.StdEncoding.DecodeString(blobStr)
-		if err != nil {
-			lastErr = fmt.Errorf("failed to decode base64 blob: %w", err)
-			f.logger.WithError(err).WithField("attempt", attempt+1).Warn("Base64 decode failed")
-			continue
-		}
+			// Parse the decoded blob as JSON
+			var blobResult map[string]interface{}
+			if err := json.Unmarshal(blobData, &blobResult); err != nil {
+				lastErr = fmt.Errorf("failed to parse decoded blob: %w", err)
+				f.logger.WithError(err).WithFields(logrus.Fields{
+					"attempt": attempt + 1,
+					"url":     validatorListURL,
+				}).Warn("Blob parse failed")
+				continue
+			}
 
-		// Parse the decoded blob as JSON
-		var blobResult map[string]interface{}
-		if err := json.Unmarshal(blobData, &blobResult); err != nil {
-			lastErr = fmt.Errorf("failed to parse decoded blob: %w", err)
-			f.logger.WithError(err).WithField("attempt", attempt+1).Warn("Blob parse failed")
-			continue
+			return blobResult, nil
 		}
-
-		return blobResult, nil
 	}
 
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
@@ -307,7 +384,7 @@ func (f *Fetcher) parseValidator(raw interface{}) (*models.Validator, error) {
 	}
 
 	v := &models.Validator{
-		Network:     "altnet",
+		Network:     f.network,
 		LastUpdated: time.Now().Unix(),
 		IsActive:    true,
 	}

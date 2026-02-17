@@ -38,6 +38,7 @@ func main() {
 	logger.WithFields(logrus.Fields{
 		"rippled_json_rpc":  cfg.RippledJSONRPCURL,
 		"rippled_websocket": cfg.RippledWebSocketURL,
+		"network":           cfg.Network,
 		"listen_addr":       cfg.ListenAddr,
 		"listen_port":       cfg.ListenPort,
 	}).Info("XRPL Validator Service starting")
@@ -46,11 +47,12 @@ func main() {
 	rippledClient := rippled.NewClient(cfg.RippledJSONRPCURL, cfg.RippledWebSocketURL, logger)
 
 	// Attempt to connect to rippled
-	// ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	// if err := rippledClient.Connect(ctx); err != nil {
-	// 	logger.WithError(err).Fatal("Failed to connect to rippled")
-	// }
-	// cancel()
+	connectCtx, connectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := rippledClient.Connect(connectCtx); err != nil {
+		connectCancel()
+		logger.WithError(err).Fatal("Failed to connect to rippled")
+	}
+	connectCancel()
 
 	// Create geolocation provider (try real, fallback to demo)
 	geoProvider := validator.NewRealGeoLocationProvider(logger)
@@ -60,12 +62,14 @@ func main() {
 		rippledClient,
 		time.Duration(cfg.ValidatorRefreshInterval)*time.Second,
 		geoProvider,
+		cfg.ValidatorListSites,
+		cfg.Network,
 		logger,
 	)
 	validatorFetcher.Start(context.Background())
 
 	// Create transaction listener
-	transactionListener := transaction.NewListener(rippledClient, validatorFetcher, logger)
+	transactionListener := transaction.NewListener(rippledClient, cfg.MinPaymentDrops, logger)
 	if err := transactionListener.Start(context.Background()); err != nil {
 		metrics.ValidatorFetchTotal.WithLabelValues("error").Inc() // Note: reusing for listener start
 		logger.WithError(err).Error("Failed to start transaction listener")
