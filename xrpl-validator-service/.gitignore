@@ -21,3 +21,4 @@ vendor/
 # Build artifacts
 /validator-service
 /cmd/validator-service/validator-service
+/data/

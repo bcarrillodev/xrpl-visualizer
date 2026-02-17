@@ -50,8 +50,25 @@ func TestNewConfig(t *testing.T) {
 	if cfg.SecondaryValidatorRegistryURL != "https://api.xrpscan.com/api/v1/validatorregistry" {
 		t.Errorf("Expected SecondaryValidatorRegistryURL default to XRPSCAN API, got %s", cfg.SecondaryValidatorRegistryURL)
 	}
+	if cfg.ValidatorMetadataCachePath != "data/validator-metadata-cache.json" {
+		t.Errorf("Expected ValidatorMetadataCachePath default, got %s", cfg.ValidatorMetadataCachePath)
+	}
+	if cfg.GeoCachePath != "data/geolocation-cache.json" {
+		t.Errorf("Expected GeoCachePath default, got %s", cfg.GeoCachePath)
+	}
+	if cfg.GeoLookupMinIntervalMS != 1200 {
+		t.Errorf("Expected GeoLookupMinIntervalMS 1200, got %d", cfg.GeoLookupMinIntervalMS)
+	}
+	if cfg.GeoRateLimitCooldownSeconds != 900 {
+		t.Errorf("Expected GeoRateLimitCooldownSeconds 900, got %d", cfg.GeoRateLimitCooldownSeconds)
+	}
 
-	expectedDefaultCORS := []string{"http://127.0.0.1:3000", "http://localhost:3000"}
+	expectedDefaultCORS := []string{
+		"http://127.0.0.1:3000",
+		"http://127.0.0.1:5173",
+		"http://localhost:3000",
+		"http://localhost:5173",
+	}
 	if len(cfg.CORSAllowedOrigins) != len(expectedDefaultCORS) {
 		t.Errorf("Expected CORSAllowedOrigins length %d, got %d", len(expectedDefaultCORS), len(cfg.CORSAllowedOrigins))
 	}
@@ -74,6 +91,10 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 	os.Setenv("VALIDATOR_REFRESH_INTERVAL", "600")
 	os.Setenv("VALIDATOR_LIST_SITES", "https://example.com/vl1,https://example.com/vl2")
 	os.Setenv("SECONDARY_VALIDATOR_REGISTRY_URL", "https://example.com/registry")
+	os.Setenv("VALIDATOR_METADATA_CACHE_PATH", "/tmp/validator-meta-cache.json")
+	os.Setenv("GEO_CACHE_PATH", "/tmp/geo-cache.json")
+	os.Setenv("GEO_LOOKUP_MIN_INTERVAL_MS", "2500")
+	os.Setenv("GEO_RATE_LIMIT_COOLDOWN_SECONDS", "1800")
 	os.Setenv("MIN_PAYMENT_DROPS", "2500000000")
 	os.Setenv("LOG_LEVEL", "debug")
 	os.Setenv("CORS_ALLOWED_ORIGINS", "http://example.com,http://test.com")
@@ -90,6 +111,10 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 		os.Unsetenv("VALIDATOR_REFRESH_INTERVAL")
 		os.Unsetenv("VALIDATOR_LIST_SITES")
 		os.Unsetenv("SECONDARY_VALIDATOR_REGISTRY_URL")
+		os.Unsetenv("VALIDATOR_METADATA_CACHE_PATH")
+		os.Unsetenv("GEO_CACHE_PATH")
+		os.Unsetenv("GEO_LOOKUP_MIN_INTERVAL_MS")
+		os.Unsetenv("GEO_RATE_LIMIT_COOLDOWN_SECONDS")
 		os.Unsetenv("MIN_PAYMENT_DROPS")
 		os.Unsetenv("LOG_LEVEL")
 		os.Unsetenv("CORS_ALLOWED_ORIGINS")
@@ -120,6 +145,18 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 	if cfg.SecondaryValidatorRegistryURL != "https://example.com/registry" {
 		t.Errorf("Expected SecondaryValidatorRegistryURL 'https://example.com/registry', got %s", cfg.SecondaryValidatorRegistryURL)
 	}
+	if cfg.ValidatorMetadataCachePath != "/tmp/validator-meta-cache.json" {
+		t.Errorf("Expected ValidatorMetadataCachePath '/tmp/validator-meta-cache.json', got %s", cfg.ValidatorMetadataCachePath)
+	}
+	if cfg.GeoCachePath != "/tmp/geo-cache.json" {
+		t.Errorf("Expected GeoCachePath '/tmp/geo-cache.json', got %s", cfg.GeoCachePath)
+	}
+	if cfg.GeoLookupMinIntervalMS != 2500 {
+		t.Errorf("Expected GeoLookupMinIntervalMS 2500, got %d", cfg.GeoLookupMinIntervalMS)
+	}
+	if cfg.GeoRateLimitCooldownSeconds != 1800 {
+		t.Errorf("Expected GeoRateLimitCooldownSeconds 1800, got %d", cfg.GeoRateLimitCooldownSeconds)
+	}
 }
 
 func validConfig() *Config {
@@ -135,6 +172,10 @@ func validConfig() *Config {
 		ValidatorRefreshInterval:      300,
 		ValidatorListSites:            []string{"https://vl.ripple.com"},
 		SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+		ValidatorMetadataCachePath:    "data/validator-metadata-cache.json",
+		GeoCachePath:                  "data/geolocation-cache.json",
+		GeoLookupMinIntervalMS:        1200,
+		GeoRateLimitCooldownSeconds:   900,
 		MinPaymentDrops:               1000000000,
 		CORSAllowedOrigins:            []string{"http://localhost:3000"},
 	}
@@ -155,6 +196,10 @@ func TestConfigValidate(t *testing.T) {
 		{name: "empty network", mutate: func(c *Config) { c.Network = "" }, wantErr: true},
 		{name: "empty validator sites", mutate: func(c *Config) { c.ValidatorListSites = []string{} }, wantErr: true},
 		{name: "empty secondary registry", mutate: func(c *Config) { c.SecondaryValidatorRegistryURL = "" }, wantErr: true},
+		{name: "empty validator metadata cache path", mutate: func(c *Config) { c.ValidatorMetadataCachePath = "" }, wantErr: true},
+		{name: "empty geo cache path", mutate: func(c *Config) { c.GeoCachePath = "" }, wantErr: true},
+		{name: "zero geo min interval", mutate: func(c *Config) { c.GeoLookupMinIntervalMS = 0 }, wantErr: true},
+		{name: "zero geo cooldown", mutate: func(c *Config) { c.GeoRateLimitCooldownSeconds = 0 }, wantErr: true},
 		{name: "zero min payment", mutate: func(c *Config) { c.MinPaymentDrops = 0 }, wantErr: true},
 	}
 

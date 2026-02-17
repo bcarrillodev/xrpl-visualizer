@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brandon/xrpl-validator-service/internal/models"
@@ -24,6 +27,27 @@ var demoLocations = []struct {
 	{-33.8688, 151.2093, "Sydney", "AU"},
 }
 
+const cacheVersion = 1
+
+type geoCacheEntry struct {
+	CountryCode string  `json:"country_code"`
+	City        string  `json:"city"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	UpdatedAt   int64   `json:"updated_at"`
+}
+
+type geoCacheFile struct {
+	Version int                       `json:"version"`
+	Entries map[string]*geoCacheEntry `json:"entries"`
+}
+
+type RealGeoLocationConfig struct {
+	CachePath         string
+	MinLookupInterval time.Duration
+	RateLimitCooldown time.Duration
+}
+
 // NoOpGeoLocationProvider is a stub implementation that doesn't enrich data
 type NoOpGeoLocationProvider struct {
 	logger *logrus.Logger
@@ -36,7 +60,6 @@ func NewNoOpGeoLocationProvider(logger *logrus.Logger) *NoOpGeoLocationProvider 
 
 // EnrichValidator assigns demo coordinates for visualization
 func (p *NoOpGeoLocationProvider) EnrichValidator(validator *models.Validator) error {
-	// Fallback for single-assign usage; batch assignment is preferred.
 	location := demoLocations[0]
 	validator.Latitude = location.lat
 	validator.Longitude = location.lng
@@ -71,16 +94,39 @@ func (p *NoOpGeoLocationProvider) AssignDemoLocations(validators []*models.Valid
 
 // RealGeoLocationProvider uses IP geolocation API for real data
 type RealGeoLocationProvider struct {
-	logger *logrus.Logger
-	client *http.Client
+	logger            *logrus.Logger
+	client            *http.Client
+	cachePath         string
+	minLookupInterval time.Duration
+	rateLimitCooldown time.Duration
+	lastLookupAt      time.Time
+	rateLimitedUntil  time.Time
+	mu                sync.Mutex
+	cache             map[string]*geoCacheEntry
 }
 
 // NewRealGeoLocationProvider creates a new real geolocation provider
-func NewRealGeoLocationProvider(logger *logrus.Logger) *RealGeoLocationProvider {
-	return &RealGeoLocationProvider{
-		logger: logger,
-		client: &http.Client{Timeout: 10 * time.Second},
+func NewRealGeoLocationProvider(logger *logrus.Logger, cfg RealGeoLocationConfig) *RealGeoLocationProvider {
+	if cfg.CachePath == "" {
+		cfg.CachePath = "data/geolocation-cache.json"
 	}
+	if cfg.MinLookupInterval <= 0 {
+		cfg.MinLookupInterval = 1200 * time.Millisecond
+	}
+	if cfg.RateLimitCooldown <= 0 {
+		cfg.RateLimitCooldown = 15 * time.Minute
+	}
+
+	p := &RealGeoLocationProvider{
+		logger:            logger,
+		client:            &http.Client{Timeout: 10 * time.Second},
+		cachePath:         cfg.CachePath,
+		minLookupInterval: cfg.MinLookupInterval,
+		rateLimitCooldown: cfg.RateLimitCooldown,
+		cache:             make(map[string]*geoCacheEntry),
+	}
+	p.loadCache()
+	return p
 }
 
 // EnrichValidator attempts to get real geolocation data
@@ -88,31 +134,36 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 	if validator.Domain == "" {
 		return fmt.Errorf("no domain available for geolocation")
 	}
-	domain := strings.TrimSpace(validator.Domain)
-	domain = strings.TrimSuffix(domain, ".")
-	if host, _, err := net.SplitHostPort(domain); err == nil {
-		domain = host
+
+	domain := normalizeDomain(validator.Domain)
+	if domain == "" {
+		return fmt.Errorf("invalid domain")
 	}
 
-	// Extract IP from domain
+	if entry, ok := p.getCached("domain:" + domain); ok {
+		applyGeo(validator, entry)
+		return nil
+	}
+
 	ips, err := net.LookupIP(domain)
 	if err != nil || len(ips) == 0 {
 		p.logger.WithError(err).WithField("domain", domain).Warn("Failed to resolve domain")
 		return fmt.Errorf("failed to resolve domain %s: %w", domain, err)
 	}
 
-	ip := ""
-	for _, candidate := range ips {
-		if candidate.To4() != nil {
-			ip = candidate.String()
-			break
-		}
-	}
-	if ip == "" {
-		ip = ips[0].String()
+	ip := pickIP(ips)
+	if entry, ok := p.getCached("ip:" + ip); ok {
+		applyGeo(validator, entry)
+		p.setCached("domain:"+domain, entry)
+		return nil
 	}
 
-	// Query IP geolocation API
+	if until := p.getRateLimitUntil(); time.Now().Before(until) {
+		return fmt.Errorf("geolocation lookup in cooldown until %s", until.Format(time.RFC3339))
+	}
+
+	p.waitForThrottle()
+
 	url := fmt.Sprintf("https://ipwho.is/%s", ip)
 	resp, err := p.client.Get(url)
 	if err != nil {
@@ -121,6 +172,10 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		p.setRateLimitUntil(time.Now().Add(p.rateLimitCooldown))
+		return fmt.Errorf("geolocation API returned status %d", resp.StatusCode)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("geolocation API returned status %d", resp.StatusCode)
 	}
@@ -133,20 +188,27 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 		Lat         float64 `json:"latitude"`
 		Lon         float64 `json:"longitude"`
 	}
-
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		p.logger.WithError(err).WithField("ip", ip).Warn("Failed to parse geolocation response")
 		return fmt.Errorf("failed to parse geolocation response: %w", err)
 	}
-
 	if !result.Success {
 		return fmt.Errorf("geolocation API failed: %s", result.Message)
 	}
 
-	validator.Latitude = result.Lat
-	validator.Longitude = result.Lon
-	validator.CountryCode = result.CountryCode
-	validator.City = result.City
+	entry := &geoCacheEntry{
+		CountryCode: result.CountryCode,
+		City:        result.City,
+		Latitude:    result.Lat,
+		Longitude:   result.Lon,
+		UpdatedAt:   time.Now().Unix(),
+	}
+	applyGeo(validator, entry)
+	p.setCached("ip:"+ip, entry)
+	p.setCached("domain:"+domain, entry)
+	if err := p.persistCache(); err != nil {
+		p.logger.WithError(err).Warn("Failed to persist geolocation cache")
+	}
 
 	p.logger.WithFields(logrus.Fields{
 		"domain":  domain,
@@ -156,4 +218,132 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 	}).Debug("Enriched validator with real geolocation")
 
 	return nil
+}
+
+func normalizeDomain(raw string) string {
+	domain := strings.TrimSpace(raw)
+	domain = strings.TrimSuffix(domain, ".")
+	if host, _, err := net.SplitHostPort(domain); err == nil {
+		domain = host
+	}
+	return strings.ToLower(strings.TrimSpace(domain))
+}
+
+func pickIP(ips []net.IP) string {
+	for _, candidate := range ips {
+		if candidate.To4() != nil {
+			return candidate.String()
+		}
+	}
+	return ips[0].String()
+}
+
+func applyGeo(validator *models.Validator, entry *geoCacheEntry) {
+	validator.Latitude = entry.Latitude
+	validator.Longitude = entry.Longitude
+	validator.CountryCode = entry.CountryCode
+	validator.City = entry.City
+}
+
+func (p *RealGeoLocationProvider) getCached(key string) (*geoCacheEntry, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	entry, ok := p.cache[key]
+	if !ok || entry == nil {
+		return nil, false
+	}
+	copy := *entry
+	return &copy, true
+}
+
+func (p *RealGeoLocationProvider) setCached(key string, entry *geoCacheEntry) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	copy := *entry
+	p.cache[key] = &copy
+}
+
+func (p *RealGeoLocationProvider) waitForThrottle() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.lastLookupAt.IsZero() {
+		p.lastLookupAt = time.Now()
+		return
+	}
+	nextAllowed := p.lastLookupAt.Add(p.minLookupInterval)
+	now := time.Now()
+	if now.Before(nextAllowed) {
+		time.Sleep(nextAllowed.Sub(now))
+	}
+	p.lastLookupAt = time.Now()
+}
+
+func (p *RealGeoLocationProvider) getRateLimitUntil() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.rateLimitedUntil
+}
+
+func (p *RealGeoLocationProvider) setRateLimitUntil(until time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.rateLimitedUntil = until
+}
+
+func (p *RealGeoLocationProvider) loadCache() {
+	data, err := os.ReadFile(p.cachePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			p.logger.WithError(err).WithField("path", p.cachePath).Warn("Failed to read geolocation cache")
+		}
+		return
+	}
+
+	var payload geoCacheFile
+	if err := json.Unmarshal(data, &payload); err != nil {
+		p.logger.WithError(err).WithField("path", p.cachePath).Warn("Failed to parse geolocation cache")
+		return
+	}
+	if payload.Version != cacheVersion || payload.Entries == nil {
+		return
+	}
+
+	p.mu.Lock()
+	p.cache = payload.Entries
+	p.mu.Unlock()
+
+	p.logger.WithFields(logrus.Fields{
+		"path":    p.cachePath,
+		"entries": len(payload.Entries),
+	}).Info("Loaded geolocation cache")
+}
+
+func (p *RealGeoLocationProvider) persistCache() error {
+	p.mu.Lock()
+	payload := geoCacheFile{
+		Version: cacheVersion,
+		Entries: make(map[string]*geoCacheEntry, len(p.cache)),
+	}
+	for key, entry := range p.cache {
+		if entry == nil {
+			continue
+		}
+		copy := *entry
+		payload.Entries[key] = &copy
+	}
+	p.mu.Unlock()
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(p.cachePath), 0o755); err != nil {
+		return err
+	}
+	tmpPath := p.cachePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, p.cachePath)
 }

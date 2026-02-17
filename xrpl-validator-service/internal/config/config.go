@@ -30,6 +30,10 @@ type Config struct {
 	ValidatorRefreshInterval      int // seconds
 	ValidatorListSites            []string
 	SecondaryValidatorRegistryURL string
+	ValidatorMetadataCachePath    string
+	GeoCachePath                  string
+	GeoLookupMinIntervalMS        int
+	GeoRateLimitCooldownSeconds   int
 
 	// Transaction Configuration
 	MinPaymentDrops int64
@@ -40,7 +44,7 @@ type Config struct {
 
 // NewConfig creates a new config from environment variables or defaults
 func NewConfig() *Config {
-	corsOrigins := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+	corsOrigins := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173")
 	validatorListSites := getEnv("VALIDATOR_LIST_SITES", "https://vl.ripple.com,https://unl.xrplf.org")
 	cfg := &Config{
 		SourceMode:                    strings.ToLower(getEnv("XRPL_SOURCE_MODE", "hybrid")),
@@ -55,6 +59,10 @@ func NewConfig() *Config {
 		ValidatorRefreshInterval:      getEnvInt("VALIDATOR_REFRESH_INTERVAL", 300), // 5 minutes
 		ValidatorListSites:            splitCSV(validatorListSites),
 		SecondaryValidatorRegistryURL: getEnv("SECONDARY_VALIDATOR_REGISTRY_URL", "https://api.xrpscan.com/api/v1/validatorregistry"),
+		ValidatorMetadataCachePath:    getEnv("VALIDATOR_METADATA_CACHE_PATH", "data/validator-metadata-cache.json"),
+		GeoCachePath:                  getEnv("GEO_CACHE_PATH", "data/geolocation-cache.json"),
+		GeoLookupMinIntervalMS:        getEnvInt("GEO_LOOKUP_MIN_INTERVAL_MS", 1200),
+		GeoRateLimitCooldownSeconds:   getEnvInt("GEO_RATE_LIMIT_COOLDOWN_SECONDS", 900),
 		MinPaymentDrops:               getEnvInt64("MIN_PAYMENT_DROPS", 1000000000), // 1000 XRP
 		LogLevel:                      getEnv("LOG_LEVEL", "info"),
 	}
@@ -135,6 +143,18 @@ func (c *Config) Validate() error {
 	}
 	if c.SecondaryValidatorRegistryURL == "" {
 		return fmt.Errorf("secondary validator registry URL cannot be empty")
+	}
+	if strings.TrimSpace(c.ValidatorMetadataCachePath) == "" {
+		return fmt.Errorf("validator metadata cache path cannot be empty")
+	}
+	if strings.TrimSpace(c.GeoCachePath) == "" {
+		return fmt.Errorf("geo cache path cannot be empty")
+	}
+	if c.GeoLookupMinIntervalMS <= 0 {
+		return fmt.Errorf("geo lookup min interval must be positive: %d", c.GeoLookupMinIntervalMS)
+	}
+	if c.GeoRateLimitCooldownSeconds <= 0 {
+		return fmt.Errorf("geo rate limit cooldown must be positive: %d", c.GeoRateLimitCooldownSeconds)
 	}
 	if c.MinPaymentDrops <= 0 {
 		return fmt.Errorf("minimum payment drops must be positive: %d", c.MinPaymentDrops)

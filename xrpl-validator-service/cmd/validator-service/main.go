@@ -54,7 +54,11 @@ func main() {
 	defer appCancel()
 
 	// Create geolocation provider (try real, fallback to demo)
-	geoProvider := validator.NewRealGeoLocationProvider(logger)
+	geoProvider := validator.NewRealGeoLocationProvider(logger, validator.RealGeoLocationConfig{
+		CachePath:         cfg.GeoCachePath,
+		MinLookupInterval: time.Duration(cfg.GeoLookupMinIntervalMS) * time.Millisecond,
+		RateLimitCooldown: time.Duration(cfg.GeoRateLimitCooldownSeconds) * time.Second,
+	})
 
 	// Create validator fetcher
 	validatorFetcher := validator.NewFetcher(
@@ -63,6 +67,7 @@ func main() {
 		geoProvider,
 		cfg.ValidatorListSites,
 		cfg.SecondaryValidatorRegistryURL,
+		cfg.ValidatorMetadataCachePath,
 		cfg.Network,
 		logger,
 	)

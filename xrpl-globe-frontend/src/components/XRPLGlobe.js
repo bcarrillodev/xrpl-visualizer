@@ -7,6 +7,7 @@ const MODE = {
   FLOW: "flow",
   HEALTH: "health",
 };
+const FAST_RETRY_MS = 10 * 1000;
 const VALIDATOR_REFRESH_MS = 5 * 60 * 1000;
 const VALIDATOR_CACHE_KEY = "xrpl_validators_cache_v1";
 
@@ -14,6 +15,7 @@ const XRPLGlobe = () => {
   const globeEl = useRef();
   const [mode, setMode] = useState(MODE.FLOW);
   const [validators, setValidators] = useState([]);
+  const [mappedValidators, setMappedValidators] = useState([]);
   const [fetchError, setFetchError] = useState(null);
   const [minPaymentXRP, setMinPaymentXRP] = useState(10000);
 
@@ -48,9 +50,26 @@ const XRPLGlobe = () => {
       }
     };
 
+    let timeoutId = null;
+
+    const applyValidators = (allValidators) => {
+      const all = Array.isArray(allValidators) ? allValidators : [];
+      const mapped = all.filter((v) => v.latitude !== 0 || v.longitude !== 0);
+      setValidators(all);
+      setMappedValidators(mapped);
+      writeValidatorCache(all);
+    };
+
+    const scheduleFetch = (delayMs) => {
+      timeoutId = setTimeout(fetchValidators, delayMs);
+    };
+
     const fetchValidators = () => {
       fetch("http://localhost:8080/validators")
         .then((res) => {
+          if (res.status === 304) {
+            return { validators: readValidatorCache() || [] };
+          }
           if (!res.ok) {
             throw new Error(`HTTP ${res.status}: ${res.statusText}`);
           }
@@ -58,35 +77,33 @@ const XRPLGlobe = () => {
         })
         .then((data) => {
           if (!isMounted) return;
-
-          const validNodes = data.validators.filter(
-            (v) => v.latitude !== 0 || v.longitude !== 0,
-          );
-          setValidators(validNodes);
-          writeValidatorCache(validNodes);
+          applyValidators(data.validators || []);
           setFetchError(null);
+          scheduleFetch((data.validators || []).length > 0 ? VALIDATOR_REFRESH_MS : FAST_RETRY_MS);
         })
         .catch((err) => {
           if (!isMounted) return;
           const cached = readValidatorCache();
-          if (cached && cached.length) {
-            setValidators(cached);
+          if (cached) {
+            applyValidators(cached);
           }
           console.error("Failed to fetch validators:", err);
           setFetchError(`Failed to load validators: ${err.message}`);
+          scheduleFetch(FAST_RETRY_MS);
         });
     };
 
     const cached = readValidatorCache();
-    if (cached && cached.length) {
-      setValidators(cached);
+    if (cached) {
+      applyValidators(cached);
     }
     fetchValidators();
-    const intervalId = setInterval(fetchValidators, VALIDATOR_REFRESH_MS);
 
     return () => {
       isMounted = false;
-      clearInterval(intervalId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
     };
   }, []);
 
@@ -161,6 +178,7 @@ const XRPLGlobe = () => {
         </p>
         <p>Mode: {mode === MODE.FLOW ? "Live Flow" : "Network Health"}</p>
         <p>Validators: {validators.length}</p>
+        <p>Mapped Validators: {mappedValidators.length}</p>
 
         {mode === MODE.FLOW && (
           <>
@@ -232,7 +250,7 @@ const XRPLGlobe = () => {
         ref={globeEl}
         globeImageUrl="//unpkg.com/three-globe/example/img/earth-night.jpg"
         backgroundImageUrl="//unpkg.com/three-globe/example/img/night-sky.png"
-        pointsData={validators}
+        pointsData={mappedValidators}
         pointLat={(d) => d.latitude}
         pointLng={(d) => d.longitude}
         onPointHover={(point) => {

@@ -73,6 +73,10 @@ services:
       VALIDATOR_REFRESH_INTERVAL: 300
       VALIDATOR_LIST_SITES: https://vl.ripple.com,https://unl.xrplf.org
       SECONDARY_VALIDATOR_REGISTRY_URL: https://api.xrpscan.com/api/v1/validatorregistry
+      VALIDATOR_METADATA_CACHE_PATH: data/validator-metadata-cache.json
+      GEO_CACHE_PATH: data/geolocation-cache.json
+      GEO_LOOKUP_MIN_INTERVAL_MS: 1200
+      GEO_RATE_LIMIT_COOLDOWN_SECONDS: 900
       MIN_PAYMENT_DROPS: 1000000000
       LOG_LEVEL: info
     container_name: xrpl-validator-service
@@ -101,6 +105,10 @@ Configure via environment variables:
 | `VALIDATOR_REFRESH_INTERVAL` | `300` | Validator refresh interval in seconds |
 | `VALIDATOR_LIST_SITES` | `https://vl.ripple.com,https://unl.xrplf.org` | Comma-separated validator list source URLs |
 | `SECONDARY_VALIDATOR_REGISTRY_URL` | `https://api.xrpscan.com/api/v1/validatorregistry` | Secondary validator metadata source for domain enrichment |
+| `VALIDATOR_METADATA_CACHE_PATH` | `data/validator-metadata-cache.json` | Persistent validator metadata cache keyed by validator key/address |
+| `GEO_CACHE_PATH` | `data/geolocation-cache.json` | Persistent geolocation cache path (survives process restarts) |
+| `GEO_LOOKUP_MIN_INTERVAL_MS` | `1200` | Minimum delay between outbound geolocation lookups |
+| `GEO_RATE_LIMIT_COOLDOWN_SECONDS` | `900` | Cooldown window after a geolocation provider `429` |
 | `MIN_PAYMENT_DROPS` | `1000000000` | Minimum streamed payment amount in drops (1,000 XRP) |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 
@@ -274,6 +282,10 @@ XRPL_SOURCE_MODE=hybrid \
 XRPL_NETWORK=mainnet \
 VALIDATOR_LIST_SITES=https://vl.ripple.com,https://unl.xrplf.org \
 SECONDARY_VALIDATOR_REGISTRY_URL=https://api.xrpscan.com/api/v1/validatorregistry \
+VALIDATOR_METADATA_CACHE_PATH=data/validator-metadata-cache.json \
+GEO_CACHE_PATH=data/geolocation-cache.json \
+GEO_LOOKUP_MIN_INTERVAL_MS=1200 \
+GEO_RATE_LIMIT_COOLDOWN_SECONDS=900 \
 MIN_PAYMENT_DROPS=1000000000 \
 LISTEN_PORT=9000 \
 LOG_LEVEL=debug \
@@ -312,6 +324,12 @@ LOG_LEVEL=debug \
 - Confirm transaction listener is subscribed (check health endpoint)
 - Verify rippled transaction stream is active
 - Check firewall/network policies for WebSocket connections
+
+### Validators have no mapped coordinates
+
+- Check service logs for `geolocation API returned status 429` (provider rate limit)
+- Keep `GEO_CACHE_PATH` on persistent storage so previously mapped validators are reused after restart
+- Increase `GEO_LOOKUP_MIN_INTERVAL_MS` and/or `GEO_RATE_LIMIT_COOLDOWN_SECONDS` to reduce repeated rate-limit hits
 
 ## License
 

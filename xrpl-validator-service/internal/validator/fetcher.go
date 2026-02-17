@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,10 +19,53 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	validatorListCacheTTL     = 10 * time.Minute
+	secondaryRegistryCacheTTL = 30 * time.Minute
+	defaultSourceCooldown     = 2 * time.Minute
+	defaultRateLimitCooldown  = 10 * time.Minute
+)
+
+type validatorListCacheEntry struct {
+	payload   map[string]interface{}
+	expiresAt time.Time
+}
+
+type secondaryRegistryEntry struct {
+	MasterKey    string `json:"master_key"`
+	Chain        string `json:"chain"`
+	Domain       string `json:"domain"`
+	DomainLegacy string `json:"domain_legacy"`
+}
+
+type secondaryRegistryCacheEntry struct {
+	entries   []secondaryRegistryEntry
+	expiresAt time.Time
+}
+
+type validatorMetadataEntry struct {
+	Address     string  `json:"address"`
+	Domain      string  `json:"domain"`
+	Name        string  `json:"name"`
+	Latitude    float64 `json:"latitude"`
+	Longitude   float64 `json:"longitude"`
+	CountryCode string  `json:"country_code"`
+	City        string  `json:"city"`
+	LastSeenAt  int64   `json:"last_seen_at"`
+}
+
+type validatorMetadataCacheFile struct {
+	Version int                                `json:"version"`
+	Entries map[string]*validatorMetadataEntry `json:"entries"`
+}
+
+const validatorMetadataCacheVersion = 1
+
 // Fetcher handles validator data retrieval and caching
 type Fetcher struct {
 	client               rippled.RippledClient
 	logger               *logrus.Logger
+	httpClient           *http.Client
 	clientMu             sync.RWMutex
 	mu                   sync.RWMutex
 	validators           map[string]*models.Validator // Address -> Validator
@@ -30,7 +76,13 @@ type Fetcher struct {
 	maxValidators        int
 	validatorListSites   []string
 	secondaryRegistryURL string
+	metadataCachePath    string
 	network              string
+	sourceStateMu        sync.Mutex
+	validatorListCache   map[string]*validatorListCacheEntry
+	secondaryCache       *secondaryRegistryCacheEntry
+	sourceCooldownUntil  map[string]time.Time
+	metadataCache        map[string]*validatorMetadataEntry
 }
 
 // GeoLocationProvider defines the interface for geolocation enrichment
@@ -40,7 +92,7 @@ type GeoLocationProvider interface {
 }
 
 // NewFetcher creates a new validator fetcher
-func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geoProvider GeoLocationProvider, validatorListSites []string, secondaryRegistryURL string, network string, logger *logrus.Logger) *Fetcher {
+func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geoProvider GeoLocationProvider, validatorListSites []string, secondaryRegistryURL string, metadataCachePath string, network string, logger *logrus.Logger) *Fetcher {
 	if logger == nil {
 		logger = logrus.New()
 	}
@@ -60,9 +112,13 @@ func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geo
 	if strings.TrimSpace(secondaryRegistryURL) == "" {
 		secondaryRegistryURL = "https://api.xrpscan.com/api/v1/validatorregistry"
 	}
-	return &Fetcher{
+	if strings.TrimSpace(metadataCachePath) == "" {
+		metadataCachePath = "data/validator-metadata-cache.json"
+	}
+	fetcher := &Fetcher{
 		client:               client,
 		logger:               logger,
+		httpClient:           &http.Client{Timeout: 30 * time.Second},
 		validators:           make(map[string]*models.Validator),
 		refreshInterval:      refreshInterval,
 		stopChan:             make(chan struct{}),
@@ -70,8 +126,14 @@ func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geo
 		maxValidators:        1000, // Limit to prevent memory exhaustion
 		validatorListSites:   sites,
 		secondaryRegistryURL: secondaryRegistryURL,
+		metadataCachePath:    metadataCachePath,
 		network:              strings.ToLower(network),
+		validatorListCache:   make(map[string]*validatorListCacheEntry),
+		sourceCooldownUntil:  make(map[string]time.Time),
+		metadataCache:        make(map[string]*validatorMetadataEntry),
 	}
+	fetcher.loadMetadataCache()
+	return fetcher
 }
 
 // Start begins the periodic validator fetching
@@ -145,6 +207,9 @@ func (f *Fetcher) Fetch(ctx context.Context) error {
 		f.logger.WithError(err).Warn("Failed to enrich validators from secondary registry")
 	}
 
+	// Apply previously persisted metadata before live enrichment to maximize coverage.
+	f.applyPersistedMetadata(validators)
+
 	// Limit the number of validators to prevent memory exhaustion
 	if len(validators) > f.maxValidators {
 		f.logger.WithFields(logrus.Fields{
@@ -163,6 +228,9 @@ func (f *Fetcher) Fetch(ctx context.Context) error {
 		}
 	}
 
+	// Coverage lock: never regress from known mapped coordinates to zeroed coordinates.
+	f.preserveMappedCoverage(validators)
+
 	// Update cache
 	f.mu.Lock()
 	f.validators = make(map[string]*models.Validator)
@@ -172,8 +240,60 @@ func (f *Fetcher) Fetch(ctx context.Context) error {
 	f.lastUpdate = time.Now()
 	f.mu.Unlock()
 
+	f.updatePersistedMetadata(validators)
+
 	f.logger.WithField("count", len(validators)).Info("Validators updated")
 	return nil
+}
+
+func (f *Fetcher) preserveMappedCoverage(validators []*models.Validator) {
+	previous := make(map[string]*models.Validator)
+
+	f.mu.RLock()
+	for k, v := range f.validators {
+		if v != nil {
+			previous[k] = v
+		}
+	}
+	f.mu.RUnlock()
+
+	for _, v := range validators {
+		if v == nil || v.Address == "" {
+			continue
+		}
+		// Already mapped; keep fresh value.
+		if v.Latitude != 0 || v.Longitude != 0 {
+			continue
+		}
+
+		// Prefer prior in-memory mapped value if present.
+		if prev, ok := previous[v.Address]; ok && (prev.Latitude != 0 || prev.Longitude != 0) {
+			v.Latitude = prev.Latitude
+			v.Longitude = prev.Longitude
+			if v.CountryCode == "" || v.CountryCode == "XX" {
+				v.CountryCode = prev.CountryCode
+			}
+			if v.City == "" || v.City == "Unknown" {
+				v.City = prev.City
+			}
+			continue
+		}
+
+		// Fall back to persisted metadata if in-memory has no mapped value.
+		f.sourceStateMu.Lock()
+		entry := f.metadataCache[v.Address]
+		f.sourceStateMu.Unlock()
+		if entry != nil && (entry.Latitude != 0 || entry.Longitude != 0) {
+			v.Latitude = entry.Latitude
+			v.Longitude = entry.Longitude
+			if v.CountryCode == "" || v.CountryCode == "XX" {
+				v.CountryCode = entry.CountryCode
+			}
+			if v.City == "" || v.City == "Unknown" {
+				v.City = entry.City
+			}
+		}
+	}
 }
 
 // GetValidators returns the cached list of validators
@@ -265,14 +385,23 @@ func getInt64(parent map[string]interface{}, key string) int64 {
 
 // fetchValidatorList queries rippled for validator data
 func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
-	// Create HTTP client with timeout
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
 	var lastErr error
 	maxRetries := 3
 	for _, validatorListURL := range f.validatorListSites {
+		if until, ok := f.getSourceCooldown("validator-list:" + validatorListURL); ok && time.Now().Before(until) {
+			f.logger.WithFields(logrus.Fields{
+				"url":      validatorListURL,
+				"cooldown": until.Format(time.RFC3339),
+			}).Warn("Skipping validator list source while in cooldown")
+			if cached, ok := f.getValidatorListCache(validatorListURL, true); ok {
+				return cached, nil
+			}
+			continue
+		}
+		if cached, ok := f.getValidatorListCache(validatorListURL, false); ok {
+			return cached, nil
+		}
+
 		for attempt := 0; attempt < maxRetries; attempt++ {
 			if attempt > 0 {
 				// Exponential backoff
@@ -297,7 +426,7 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 			req.Header.Set("Accept", "application/json")
 
 			// Send request
-			resp, err := client.Do(req)
+			resp, err := f.httpClient.Do(req)
 			if err != nil {
 				lastErr = fmt.Errorf("failed to fetch validator list: %w", err)
 				f.logger.WithError(err).WithFields(logrus.Fields{
@@ -307,6 +436,12 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 				continue
 			}
 			if resp.StatusCode != http.StatusOK {
+				if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+					f.setSourceCooldown(
+						"validator-list:"+validatorListURL,
+						cooldownFromResponse(resp, defaultRateLimitCooldown),
+					)
+				}
 				resp.Body.Close()
 				lastErr = fmt.Errorf("validator list site returned status %d", resp.StatusCode)
 				f.logger.WithFields(logrus.Fields{
@@ -362,7 +497,15 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 				continue
 			}
 
+			f.setValidatorListCache(validatorListURL, blobResult)
 			return blobResult, nil
+		}
+	}
+
+	for _, validatorListURL := range f.validatorListSites {
+		if cached, ok := f.getValidatorListCache(validatorListURL, true); ok {
+			f.logger.WithField("url", validatorListURL).Warn("Using stale validator list cache after source failures")
+			return cached, nil
 		}
 	}
 
@@ -444,29 +587,53 @@ func (f *Fetcher) applySecondaryRegistryDomains(ctx context.Context, validators 
 		return validators, fmt.Errorf("invalid secondary registry URL: %w", err)
 	}
 
+	if until, ok := f.getSourceCooldown("registry:" + registryURL); ok && time.Now().Before(until) {
+		if cached, ok := f.getSecondaryRegistryCache(true); ok {
+			return f.mergeSecondaryRegistry(validators, trustedSet, cached), nil
+		}
+		return validators, fmt.Errorf("secondary registry in cooldown until %s", until.Format(time.RFC3339))
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryURL, nil)
 	if err != nil {
 		return validators, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := f.httpClient.Do(req)
 	if err != nil {
+		if cached, ok := f.getSecondaryRegistryCache(true); ok {
+			f.logger.WithError(err).Warn("Using stale secondary registry cache after fetch error")
+			return f.mergeSecondaryRegistry(validators, trustedSet, cached), nil
+		}
 		return validators, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			f.setSourceCooldown("registry:"+registryURL, cooldownFromResponse(resp, defaultRateLimitCooldown))
+		} else {
+			f.setSourceCooldown("registry:"+registryURL, time.Now().Add(defaultSourceCooldown))
+		}
+		if cached, ok := f.getSecondaryRegistryCache(true); ok {
+			f.logger.WithField("status", resp.StatusCode).Warn("Using stale secondary registry cache after non-OK status")
+			return f.mergeSecondaryRegistry(validators, trustedSet, cached), nil
+		}
 		return validators, fmt.Errorf("secondary registry returned status %d", resp.StatusCode)
 	}
 
-	var entries []struct {
-		MasterKey    string `json:"master_key"`
-		Chain        string `json:"chain"`
-		Domain       string `json:"domain"`
-		DomainLegacy string `json:"domain_legacy"`
-	}
+	var entries []secondaryRegistryEntry
 	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		if cached, ok := f.getSecondaryRegistryCache(true); ok {
+			f.logger.WithError(err).Warn("Using stale secondary registry cache after parse error")
+			return f.mergeSecondaryRegistry(validators, trustedSet, cached), nil
+		}
 		return validators, err
 	}
+	f.setSecondaryRegistryCache(entries)
 
+	return f.mergeSecondaryRegistry(validators, trustedSet, entries), nil
+}
+
+func (f *Fetcher) mergeSecondaryRegistry(validators []*models.Validator, trustedSet map[string]struct{}, entries []secondaryRegistryEntry) []*models.Validator {
 	byAddress := make(map[string]*models.Validator, len(validators))
 	for _, v := range validators {
 		if v != nil && v.Address != "" {
@@ -518,7 +685,216 @@ func (f *Fetcher) applySecondaryRegistryDomains(ctx context.Context, validators 
 		byAddress[v.Address] = v
 	}
 
-	return validators, nil
+	return validators
+}
+
+func (f *Fetcher) getSourceCooldown(key string) (time.Time, bool) {
+	f.sourceStateMu.Lock()
+	defer f.sourceStateMu.Unlock()
+	until, ok := f.sourceCooldownUntil[key]
+	return until, ok
+}
+
+func (f *Fetcher) setSourceCooldown(key string, until time.Time) {
+	f.sourceStateMu.Lock()
+	f.sourceCooldownUntil[key] = until
+	f.sourceStateMu.Unlock()
+}
+
+func (f *Fetcher) getValidatorListCache(source string, allowStale bool) (map[string]interface{}, bool) {
+	f.sourceStateMu.Lock()
+	defer f.sourceStateMu.Unlock()
+	entry, ok := f.validatorListCache[source]
+	if !ok || entry == nil {
+		return nil, false
+	}
+	if !allowStale && time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	return entry.payload, true
+}
+
+func (f *Fetcher) setValidatorListCache(source string, payload map[string]interface{}) {
+	f.sourceStateMu.Lock()
+	f.validatorListCache[source] = &validatorListCacheEntry{
+		payload:   payload,
+		expiresAt: time.Now().Add(validatorListCacheTTL),
+	}
+	f.sourceStateMu.Unlock()
+}
+
+func (f *Fetcher) getSecondaryRegistryCache(allowStale bool) ([]secondaryRegistryEntry, bool) {
+	f.sourceStateMu.Lock()
+	defer f.sourceStateMu.Unlock()
+	entry := f.secondaryCache
+	if entry == nil {
+		return nil, false
+	}
+	if !allowStale && time.Now().After(entry.expiresAt) {
+		return nil, false
+	}
+	out := make([]secondaryRegistryEntry, 0, len(entry.entries))
+	out = append(out, entry.entries...)
+	return out, true
+}
+
+func (f *Fetcher) setSecondaryRegistryCache(entries []secondaryRegistryEntry) {
+	out := make([]secondaryRegistryEntry, 0, len(entries))
+	out = append(out, entries...)
+	f.sourceStateMu.Lock()
+	f.secondaryCache = &secondaryRegistryCacheEntry{
+		entries:   out,
+		expiresAt: time.Now().Add(secondaryRegistryCacheTTL),
+	}
+	f.sourceStateMu.Unlock()
+}
+
+func cooldownFromResponse(resp *http.Response, fallback time.Duration) time.Time {
+	retryAfter := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if retryAfter == "" {
+		return time.Now().Add(fallback)
+	}
+	if secs, err := strconv.Atoi(retryAfter); err == nil && secs > 0 {
+		return time.Now().Add(time.Duration(secs) * time.Second)
+	}
+	if t, err := time.Parse(time.RFC1123, retryAfter); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC1123Z, retryAfter); err == nil {
+		return t
+	}
+	return time.Now().Add(fallback)
+}
+
+func (f *Fetcher) applyPersistedMetadata(validators []*models.Validator) {
+	f.sourceStateMu.Lock()
+	defer f.sourceStateMu.Unlock()
+
+	for _, v := range validators {
+		if v == nil || v.Address == "" {
+			continue
+		}
+		entry, ok := f.metadataCache[v.Address]
+		if !ok || entry == nil {
+			continue
+		}
+		if v.Domain == "" {
+			v.Domain = entry.Domain
+		}
+		if v.Name == "" || v.Name == v.Address {
+			v.Name = entry.Name
+		}
+		if (v.Latitude == 0 && v.Longitude == 0) && (entry.Latitude != 0 || entry.Longitude != 0) {
+			v.Latitude = entry.Latitude
+			v.Longitude = entry.Longitude
+			v.CountryCode = entry.CountryCode
+			v.City = entry.City
+		}
+	}
+}
+
+func (f *Fetcher) updatePersistedMetadata(validators []*models.Validator) {
+	changed := false
+	now := time.Now().Unix()
+
+	f.sourceStateMu.Lock()
+	for _, v := range validators {
+		if v == nil || v.Address == "" {
+			continue
+		}
+		entry, ok := f.metadataCache[v.Address]
+		if !ok || entry == nil {
+			entry = &validatorMetadataEntry{Address: v.Address}
+			f.metadataCache[v.Address] = entry
+			changed = true
+		}
+
+		if v.Domain != "" && entry.Domain != v.Domain {
+			entry.Domain = v.Domain
+			changed = true
+		}
+		if v.Name != "" && entry.Name != v.Name {
+			entry.Name = v.Name
+			changed = true
+		}
+		if (v.Latitude != 0 || v.Longitude != 0) &&
+			(entry.Latitude != v.Latitude || entry.Longitude != v.Longitude || entry.City != v.City || entry.CountryCode != v.CountryCode) {
+			entry.Latitude = v.Latitude
+			entry.Longitude = v.Longitude
+			entry.CountryCode = v.CountryCode
+			entry.City = v.City
+			changed = true
+		}
+		if entry.LastSeenAt != now {
+			entry.LastSeenAt = now
+			changed = true
+		}
+	}
+	f.sourceStateMu.Unlock()
+
+	if changed {
+		if err := f.persistMetadataCache(); err != nil {
+			f.logger.WithError(err).Warn("Failed to persist validator metadata cache")
+		}
+	}
+}
+
+func (f *Fetcher) loadMetadataCache() {
+	data, err := os.ReadFile(f.metadataCachePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			f.logger.WithError(err).WithField("path", f.metadataCachePath).Warn("Failed to read validator metadata cache")
+		}
+		return
+	}
+
+	var payload validatorMetadataCacheFile
+	if err := json.Unmarshal(data, &payload); err != nil {
+		f.logger.WithError(err).WithField("path", f.metadataCachePath).Warn("Failed to parse validator metadata cache")
+		return
+	}
+	if payload.Version != validatorMetadataCacheVersion || payload.Entries == nil {
+		return
+	}
+
+	f.sourceStateMu.Lock()
+	f.metadataCache = payload.Entries
+	f.sourceStateMu.Unlock()
+
+	f.logger.WithFields(logrus.Fields{
+		"path":    f.metadataCachePath,
+		"entries": len(payload.Entries),
+	}).Info("Loaded validator metadata cache")
+}
+
+func (f *Fetcher) persistMetadataCache() error {
+	f.sourceStateMu.Lock()
+	payload := validatorMetadataCacheFile{
+		Version: validatorMetadataCacheVersion,
+		Entries: make(map[string]*validatorMetadataEntry, len(f.metadataCache)),
+	}
+	for key, entry := range f.metadataCache {
+		if entry == nil {
+			continue
+		}
+		copy := *entry
+		payload.Entries[key] = &copy
+	}
+	f.sourceStateMu.Unlock()
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(f.metadataCachePath), 0o755); err != nil {
+		return err
+	}
+	tmpPath := f.metadataCachePath + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, f.metadataCachePath)
 }
 
 func mergeValidators(primary []*models.Validator, secondary []*models.Validator) []*models.Validator {
