@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -17,17 +18,18 @@ import (
 
 // Fetcher handles validator data retrieval and caching
 type Fetcher struct {
-	client              rippled.RippledClient
-	logger              *logrus.Logger
-	mu                  sync.RWMutex
-	validators          map[string]*models.Validator // Address -> Validator
-	lastUpdate          time.Time
-	refreshInterval     time.Duration
-	stopChan            chan struct{}
-	geolocationProvider GeoLocationProvider
-	maxValidators       int
-	validatorListSites  []string
-	network             string
+	client               rippled.RippledClient
+	logger               *logrus.Logger
+	mu                   sync.RWMutex
+	validators           map[string]*models.Validator // Address -> Validator
+	lastUpdate           time.Time
+	refreshInterval      time.Duration
+	stopChan             chan struct{}
+	geolocationProvider  GeoLocationProvider
+	maxValidators        int
+	validatorListSites   []string
+	secondaryRegistryURL string
+	network              string
 }
 
 // GeoLocationProvider defines the interface for geolocation enrichment
@@ -37,7 +39,7 @@ type GeoLocationProvider interface {
 }
 
 // NewFetcher creates a new validator fetcher
-func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geoProvider GeoLocationProvider, validatorListSites []string, network string, logger *logrus.Logger) *Fetcher {
+func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geoProvider GeoLocationProvider, validatorListSites []string, secondaryRegistryURL string, network string, logger *logrus.Logger) *Fetcher {
 	if logger == nil {
 		logger = logrus.New()
 	}
@@ -54,16 +56,20 @@ func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geo
 	if strings.TrimSpace(network) == "" {
 		network = "mainnet"
 	}
+	if strings.TrimSpace(secondaryRegistryURL) == "" {
+		secondaryRegistryURL = "https://api.xrpscan.com/api/v1/validatorregistry"
+	}
 	return &Fetcher{
-		client:              client,
-		logger:              logger,
-		validators:          make(map[string]*models.Validator),
-		refreshInterval:     refreshInterval,
-		stopChan:            make(chan struct{}),
-		geolocationProvider: geoProvider,
-		maxValidators:       1000, // Limit to prevent memory exhaustion
-		validatorListSites:  sites,
-		network:             strings.ToLower(network),
+		client:               client,
+		logger:               logger,
+		validators:           make(map[string]*models.Validator),
+		refreshInterval:      refreshInterval,
+		stopChan:             make(chan struct{}),
+		geolocationProvider:  geoProvider,
+		maxValidators:        1000, // Limit to prevent memory exhaustion
+		validatorListSites:   sites,
+		secondaryRegistryURL: secondaryRegistryURL,
+		network:              strings.ToLower(network),
 	}
 }
 
@@ -112,6 +118,17 @@ func (f *Fetcher) Fetch(ctx context.Context) error {
 	validators, err := f.parseValidators(result)
 	if err != nil {
 		return fmt.Errorf("failed to parse validators: %w", err)
+	}
+
+	trustedValidators, trustedSet, err := f.fetchTrustedValidatorsFromRippled(ctx)
+	if err != nil {
+		f.logger.WithError(err).Warn("Failed to fetch trusted validators from rippled")
+	}
+	validators = mergeValidators(validators, trustedValidators)
+
+	validators, err = f.applySecondaryRegistryDomains(ctx, validators, trustedSet)
+	if err != nil {
+		f.logger.WithError(err).Warn("Failed to enrich validators from secondary registry")
 	}
 
 	// Limit the number of validators to prevent memory exhaustion
@@ -335,6 +352,175 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 	}
 
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
+}
+
+func (f *Fetcher) fetchTrustedValidatorsFromRippled(ctx context.Context) ([]*models.Validator, map[string]struct{}, error) {
+	resp, err := f.client.Command(ctx, "validators", map[string]interface{}{})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	respMap, ok := resp.(map[string]interface{})
+	if !ok {
+		return nil, nil, fmt.Errorf("unexpected validators response format")
+	}
+	resultMap, ok := respMap["result"].(map[string]interface{})
+	if !ok {
+		return nil, nil, fmt.Errorf("validators response missing result")
+	}
+	keysRaw, _ := resultMap["trusted_validator_keys"].([]interface{})
+	rawKeys := make([]interface{}, 0, len(keysRaw))
+	rawKeys = append(rawKeys, keysRaw...)
+
+	// During startup/bootstrap, trusted_validator_keys may be empty.
+	// Fall back to publisher list keys so we can still map validator metadata.
+	if len(rawKeys) == 0 {
+		if publisherLists, ok := resultMap["publisher_lists"].([]interface{}); ok {
+			for _, listRaw := range publisherLists {
+				listMap, ok := listRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				members, ok := listMap["list"].([]interface{})
+				if !ok {
+					continue
+				}
+				rawKeys = append(rawKeys, members...)
+			}
+		}
+	}
+
+	out := make([]*models.Validator, 0, len(rawKeys))
+	keySet := make(map[string]struct{}, len(rawKeys))
+	now := time.Now().Unix()
+
+	for _, raw := range rawKeys {
+		key, ok := raw.(string)
+		if !ok || key == "" {
+			continue
+		}
+		keySet[key] = struct{}{}
+		out = append(out, &models.Validator{
+			Address:     key,
+			PublicKey:   key,
+			Name:        key,
+			Network:     f.network,
+			LastUpdated: now,
+			IsActive:    true,
+			CountryCode: "XX",
+			City:        "Unknown",
+		})
+	}
+
+	if len(keySet) == 0 {
+		return nil, nil, fmt.Errorf("validators response did not include trusted or publisher list keys")
+	}
+
+	return out, keySet, nil
+}
+
+func (f *Fetcher) applySecondaryRegistryDomains(ctx context.Context, validators []*models.Validator, trustedSet map[string]struct{}) ([]*models.Validator, error) {
+	registryURL := strings.TrimSpace(f.secondaryRegistryURL)
+	if registryURL == "" {
+		return validators, nil
+	}
+	if _, err := url.ParseRequestURI(registryURL); err != nil {
+		return validators, fmt.Errorf("invalid secondary registry URL: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryURL, nil)
+	if err != nil {
+		return validators, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return validators, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return validators, fmt.Errorf("secondary registry returned status %d", resp.StatusCode)
+	}
+
+	var entries []struct {
+		MasterKey    string `json:"master_key"`
+		Chain        string `json:"chain"`
+		Domain       string `json:"domain"`
+		DomainLegacy string `json:"domain_legacy"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return validators, err
+	}
+
+	byAddress := make(map[string]*models.Validator, len(validators))
+	for _, v := range validators {
+		if v != nil && v.Address != "" {
+			byAddress[v.Address] = v
+		}
+	}
+
+	now := time.Now().Unix()
+	for _, entry := range entries {
+		if entry.Chain != "" && entry.Chain != "main" {
+			continue
+		}
+		if trustedSet != nil {
+			if _, ok := trustedSet[entry.MasterKey]; !ok {
+				continue
+			}
+		}
+
+		domain := strings.TrimSpace(entry.Domain)
+		if domain == "" {
+			domain = strings.TrimSpace(entry.DomainLegacy)
+		}
+		if domain == "" {
+			continue
+		}
+
+		if existing, ok := byAddress[entry.MasterKey]; ok {
+			if existing.Domain == "" {
+				existing.Domain = domain
+				if existing.Name == "" || existing.Name == existing.Address {
+					existing.Name = domain
+				}
+			}
+			continue
+		}
+
+		v := &models.Validator{
+			Address:     entry.MasterKey,
+			PublicKey:   entry.MasterKey,
+			Domain:      domain,
+			Name:        domain,
+			Network:     f.network,
+			LastUpdated: now,
+			IsActive:    true,
+			CountryCode: "XX",
+			City:        "Unknown",
+		}
+		validators = append(validators, v)
+		byAddress[v.Address] = v
+	}
+
+	return validators, nil
+}
+
+func mergeValidators(primary []*models.Validator, secondary []*models.Validator) []*models.Validator {
+	out := make([]*models.Validator, 0, len(primary)+len(secondary))
+	seen := make(map[string]struct{}, len(primary)+len(secondary))
+
+	for _, v := range append(primary, secondary...) {
+		if v == nil || v.Address == "" {
+			continue
+		}
+		if _, ok := seen[v.Address]; ok {
+			continue
+		}
+		seen[v.Address] = struct{}{}
+		out = append(out, v)
+	}
+
+	return out
 }
 
 // parseValidators extracts validator information from validator list response

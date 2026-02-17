@@ -63,6 +63,7 @@ func main() {
 		time.Duration(cfg.ValidatorRefreshInterval)*time.Second,
 		geoProvider,
 		cfg.ValidatorListSites,
+		cfg.SecondaryValidatorRegistryURL,
 		cfg.Network,
 		logger,
 	)

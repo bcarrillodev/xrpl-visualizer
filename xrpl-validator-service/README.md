@@ -68,8 +68,9 @@ services:
       LISTEN_PORT: 8080
       LISTEN_ADDR: 0.0.0.0
       VALIDATOR_REFRESH_INTERVAL: 300
-      VALIDATOR_LIST_SITES: https://vl.ripple.com
-      MIN_PAYMENT_DROPS: 10000000000
+      VALIDATOR_LIST_SITES: https://vl.ripple.com,https://unl.xrplf.org
+      SECONDARY_VALIDATOR_REGISTRY_URL: https://api.xrpscan.com/api/v1/validatorregistry
+      MIN_PAYMENT_DROPS: 1000000000
       LOG_LEVEL: info
     container_name: xrpl-validator-service
     restart: unless-stopped
@@ -92,8 +93,9 @@ Configure via environment variables:
 | `LISTEN_ADDR` | `0.0.0.0` | HTTP server listen address |
 | `LISTEN_PORT` | `8080` | HTTP server listen port |
 | `VALIDATOR_REFRESH_INTERVAL` | `300` | Validator refresh interval in seconds |
-| `VALIDATOR_LIST_SITES` | `https://vl.ripple.com` | Comma-separated validator list source URLs |
-| `MIN_PAYMENT_DROPS` | `10000000000` | Minimum streamed payment amount in drops (10,000 XRP) |
+| `VALIDATOR_LIST_SITES` | `https://vl.ripple.com,https://unl.xrplf.org` | Comma-separated validator list source URLs |
+| `SECONDARY_VALIDATOR_REGISTRY_URL` | `https://api.xrpscan.com/api/v1/validatorregistry` | Secondary validator metadata source for domain enrichment |
+| `MIN_PAYMENT_DROPS` | `1000000000` | Minimum streamed payment amount in drops (1,000 XRP) |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 
 ## API Endpoints
@@ -156,7 +158,7 @@ Response:
 
 **GET /transactions** (WebSocket upgrade)
 
-Establishes a WebSocket connection for streaming validated XRP `Payment` transactions where amount is at least `MIN_PAYMENT_DROPS` (default `10,000 XRP`).
+Establishes a WebSocket connection for streaming validated XRP `Payment` transactions where amount is at least `MIN_PAYMENT_DROPS` (default `1,000 XRP`).
 
 ```javascript
 // JavaScript example
@@ -254,8 +256,9 @@ go build ./cmd/validator-service
 ```bash
 RIPPLED_JSON_RPC_URL=http://localhost:5005 \
 XRPL_NETWORK=mainnet \
-VALIDATOR_LIST_SITES=https://vl.ripple.com \
-MIN_PAYMENT_DROPS=10000000000 \
+VALIDATOR_LIST_SITES=https://vl.ripple.com,https://unl.xrplf.org \
+SECONDARY_VALIDATOR_REGISTRY_URL=https://api.xrpscan.com/api/v1/validatorregistry \
+MIN_PAYMENT_DROPS=1000000000 \
 LISTEN_PORT=9000 \
 LOG_LEVEL=debug \
 ./validator-service

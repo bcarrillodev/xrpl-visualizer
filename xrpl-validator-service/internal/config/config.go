@@ -20,8 +20,9 @@ type Config struct {
 	CORSAllowedOrigins []string
 
 	// Validator Fetcher Configuration
-	ValidatorRefreshInterval int // seconds
-	ValidatorListSites       []string
+	ValidatorRefreshInterval      int // seconds
+	ValidatorListSites            []string
+	SecondaryValidatorRegistryURL string
 
 	// Transaction Configuration
 	MinPaymentDrops int64
@@ -32,19 +33,20 @@ type Config struct {
 
 // NewConfig creates a new config from environment variables or defaults
 func NewConfig() *Config {
-	corsOrigins := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
-	validatorListSites := getEnv("VALIDATOR_LIST_SITES", "https://vl.ripple.com")
+	corsOrigins := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
+	validatorListSites := getEnv("VALIDATOR_LIST_SITES", "https://vl.ripple.com,https://unl.xrplf.org")
 	cfg := &Config{
-		RippledJSONRPCURL:        getEnv("RIPPLED_JSON_RPC_URL", "http://localhost:5005"),
-		RippledWebSocketURL:      getEnv("RIPPLED_WEBSOCKET_URL", "ws://localhost:6006"),
-		Network:                  strings.ToLower(getEnv("XRPL_NETWORK", "mainnet")),
-		ListenPort:               getEnvInt("LISTEN_PORT", 8080),
-		ListenAddr:               getEnv("LISTEN_ADDR", "0.0.0.0"),
-		CORSAllowedOrigins:       splitCSV(corsOrigins),
-		ValidatorRefreshInterval: getEnvInt("VALIDATOR_REFRESH_INTERVAL", 300), // 5 minutes
-		ValidatorListSites:       splitCSV(validatorListSites),
-		MinPaymentDrops:          getEnvInt64("MIN_PAYMENT_DROPS", 10000000000), // 10000 XRP
-		LogLevel:                 getEnv("LOG_LEVEL", "info"),
+		RippledJSONRPCURL:             getEnv("RIPPLED_JSON_RPC_URL", "http://localhost:5005"),
+		RippledWebSocketURL:           getEnv("RIPPLED_WEBSOCKET_URL", "ws://localhost:6006"),
+		Network:                       strings.ToLower(getEnv("XRPL_NETWORK", "mainnet")),
+		ListenPort:                    getEnvInt("LISTEN_PORT", 8080),
+		ListenAddr:                    getEnv("LISTEN_ADDR", "0.0.0.0"),
+		CORSAllowedOrigins:            splitCSV(corsOrigins),
+		ValidatorRefreshInterval:      getEnvInt("VALIDATOR_REFRESH_INTERVAL", 300), // 5 minutes
+		ValidatorListSites:            splitCSV(validatorListSites),
+		SecondaryValidatorRegistryURL: getEnv("SECONDARY_VALIDATOR_REGISTRY_URL", "https://api.xrpscan.com/api/v1/validatorregistry"),
+		MinPaymentDrops:               getEnvInt64("MIN_PAYMENT_DROPS", 1000000000), // 1000 XRP
+		LogLevel:                      getEnv("LOG_LEVEL", "info"),
 	}
 	return cfg
 }
@@ -109,6 +111,9 @@ func (c *Config) Validate() error {
 	}
 	if len(c.ValidatorListSites) == 0 {
 		return fmt.Errorf("at least one validator list site must be specified")
+	}
+	if c.SecondaryValidatorRegistryURL == "" {
+		return fmt.Errorf("secondary validator registry URL cannot be empty")
 	}
 	if c.MinPaymentDrops <= 0 {
 		return fmt.Errorf("minimum payment drops must be positive: %d", c.MinPaymentDrops)

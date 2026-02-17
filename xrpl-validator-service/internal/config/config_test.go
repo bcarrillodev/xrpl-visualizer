@@ -26,17 +26,32 @@ func TestNewConfig(t *testing.T) {
 	if cfg.ValidatorRefreshInterval != 300 {
 		t.Errorf("Expected ValidatorRefreshInterval 300, got %d", cfg.ValidatorRefreshInterval)
 	}
-	if cfg.MinPaymentDrops != 10000000000 {
-		t.Errorf("Expected MinPaymentDrops 10000000000, got %d", cfg.MinPaymentDrops)
+	if cfg.MinPaymentDrops != 1000000000 {
+		t.Errorf("Expected MinPaymentDrops 1000000000, got %d", cfg.MinPaymentDrops)
 	}
-	if len(cfg.ValidatorListSites) != 1 || cfg.ValidatorListSites[0] != "https://vl.ripple.com" {
-		t.Errorf("Expected ValidatorListSites ['https://vl.ripple.com'], got %v", cfg.ValidatorListSites)
+	expectedSites := []string{"https://unl.xrplf.org", "https://vl.ripple.com"}
+	if len(cfg.ValidatorListSites) != len(expectedSites) {
+		t.Errorf("Expected ValidatorListSites length %d, got %d", len(expectedSites), len(cfg.ValidatorListSites))
+	}
+	for i, site := range expectedSites {
+		if cfg.ValidatorListSites[i] != site {
+			t.Errorf("Expected ValidatorListSites[%d] '%s', got '%s'", i, site, cfg.ValidatorListSites[i])
+		}
+	}
+	if cfg.SecondaryValidatorRegistryURL != "https://api.xrpscan.com/api/v1/validatorregistry" {
+		t.Errorf("Expected SecondaryValidatorRegistryURL default to XRPSCAN API, got %s", cfg.SecondaryValidatorRegistryURL)
 	}
 	if cfg.LogLevel != "info" {
 		t.Errorf("Expected LogLevel 'info', got %s", cfg.LogLevel)
 	}
-	if len(cfg.CORSAllowedOrigins) != 1 || cfg.CORSAllowedOrigins[0] != "http://localhost:3000" {
-		t.Errorf("Expected CORSAllowedOrigins ['http://localhost:3000'], got %v", cfg.CORSAllowedOrigins)
+	expectedDefaultCORS := []string{"http://127.0.0.1:3000", "http://localhost:3000"}
+	if len(cfg.CORSAllowedOrigins) != len(expectedDefaultCORS) {
+		t.Errorf("Expected CORSAllowedOrigins length %d, got %d", len(expectedDefaultCORS), len(cfg.CORSAllowedOrigins))
+	}
+	for i, origin := range expectedDefaultCORS {
+		if cfg.CORSAllowedOrigins[i] != origin {
+			t.Errorf("Expected CORSAllowedOrigins[%d] '%s', got '%s'", i, origin, cfg.CORSAllowedOrigins[i])
+		}
 	}
 }
 
@@ -48,6 +63,7 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 	os.Setenv("XRPL_NETWORK", "testnet")
 	os.Setenv("VALIDATOR_REFRESH_INTERVAL", "600")
 	os.Setenv("VALIDATOR_LIST_SITES", "https://example.com/vl1,https://example.com/vl2")
+	os.Setenv("SECONDARY_VALIDATOR_REGISTRY_URL", "https://example.com/registry")
 	os.Setenv("MIN_PAYMENT_DROPS", "2500000000")
 	os.Setenv("LOG_LEVEL", "debug")
 	os.Setenv("CORS_ALLOWED_ORIGINS", "http://example.com,http://test.com")
@@ -60,6 +76,7 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 		os.Unsetenv("XRPL_NETWORK")
 		os.Unsetenv("VALIDATOR_REFRESH_INTERVAL")
 		os.Unsetenv("VALIDATOR_LIST_SITES")
+		os.Unsetenv("SECONDARY_VALIDATOR_REGISTRY_URL")
 		os.Unsetenv("MIN_PAYMENT_DROPS")
 		os.Unsetenv("LOG_LEVEL")
 		os.Unsetenv("CORS_ALLOWED_ORIGINS")
@@ -97,6 +114,9 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 			t.Errorf("Expected ValidatorListSites[%d] '%s', got '%s'", i, site, cfg.ValidatorListSites[i])
 		}
 	}
+	if cfg.SecondaryValidatorRegistryURL != "https://example.com/registry" {
+		t.Errorf("Expected SecondaryValidatorRegistryURL 'https://example.com/registry', got %s", cfg.SecondaryValidatorRegistryURL)
+	}
 	if cfg.LogLevel != "debug" {
 		t.Errorf("Expected LogLevel 'debug', got %s", cfg.LogLevel)
 	}
@@ -120,165 +140,192 @@ func TestConfigValidate(t *testing.T) {
 		{
 			name: "valid config",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: false,
 		},
 		{
 			name: "invalid listen port - zero",
 			config: &Config{
-				ListenPort:               0,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    0,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "invalid listen port - too high",
 			config: &Config{
-				ListenPort:               70000,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    70000,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty listen addr",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty rippled json rpc url",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty rippled websocket url",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty network",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "zero validator refresh interval",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 0,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      0,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty validator list sites",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty secondary validator registry url",
+			config: &Config{
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "zero min payment drops",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          0,
-				CORSAllowedOrigins:       []string{"http://localhost:3000"},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               0,
+				CORSAllowedOrigins:            []string{"http://localhost:3000"},
 			},
 			wantErr: true,
 		},
 		{
 			name: "empty cors allowed origins",
 			config: &Config{
-				ListenPort:               8080,
-				ListenAddr:               "0.0.0.0",
-				RippledJSONRPCURL:        "http://localhost:5005",
-				RippledWebSocketURL:      "ws://localhost:6006",
-				Network:                  "mainnet",
-				ValidatorRefreshInterval: 300,
-				ValidatorListSites:       []string{"https://vl.ripple.com"},
-				MinPaymentDrops:          10000000000,
-				CORSAllowedOrigins:       []string{},
+				ListenPort:                    8080,
+				ListenAddr:                    "0.0.0.0",
+				RippledJSONRPCURL:             "http://localhost:5005",
+				RippledWebSocketURL:           "ws://localhost:6006",
+				Network:                       "mainnet",
+				ValidatorRefreshInterval:      300,
+				ValidatorListSites:            []string{"https://vl.ripple.com"},
+				SecondaryValidatorRegistryURL: "https://api.xrpscan.com/api/v1/validatorregistry",
+				MinPaymentDrops:               1000000000,
+				CORSAllowedOrigins:            []string{},
 			},
 			wantErr: true,
 		},

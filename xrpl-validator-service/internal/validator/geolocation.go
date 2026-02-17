@@ -128,10 +128,10 @@ func (p *RealGeoLocationProvider) EnrichValidator(validator *models.Validator) e
 	var result struct {
 		Success     bool    `json:"success"`
 		Message     string  `json:"message"`
-		CountryCode string  `json:"countryCode"`
+		CountryCode string  `json:"country_code"`
 		City        string  `json:"city"`
-		Lat         float64 `json:"lat"`
-		Lon         float64 `json:"lon"`
+		Lat         float64 `json:"latitude"`
+		Lon         float64 `json:"longitude"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
