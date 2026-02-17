@@ -10,6 +10,7 @@ const MODE = {
 const FAST_RETRY_MS = 10 * 1000;
 const VALIDATOR_REFRESH_MS = 5 * 60 * 1000;
 const VALIDATOR_CACHE_KEY = "xrpl_validators_cache_v1";
+const ACTIVITY_CELL_SIZE = 5; // degrees
 
 const XRPLGlobe = () => {
   const globeEl = useRef();
@@ -141,16 +142,51 @@ const XRPLGlobe = () => {
 
   const flowStats = useMemo(() => {
     if (!transactions.length) {
-      return { totalXRP: 0, maxXRP: 0, arcCount: 0 };
+      return { totalXRP: 0, maxXRP: 0, arcCount: 0, endpointCount: 0 };
     }
     const amounts = transactions
       .map((tx) => Number(tx.amountXRP))
       .filter((v) => Number.isFinite(v));
+    const endpointCount = transactions.reduce((acc, tx) => {
+      const hasSource = Number.isFinite(tx.startLat) && Number.isFinite(tx.startLng);
+      const hasDest = Number.isFinite(tx.endLat) && Number.isFinite(tx.endLng);
+      return acc + (hasSource ? 1 : 0) + (hasDest ? 1 : 0);
+    }, 0);
     return {
       totalXRP: amounts.reduce((acc, cur) => acc + cur, 0),
       maxXRP: amounts.reduce((acc, cur) => Math.max(acc, cur), 0),
       arcCount: transactions.filter((tx) => tx.hasArcGeo).length,
+      endpointCount,
     };
+  }, [transactions]);
+  const activityNodes = useMemo(() => {
+    if (!transactions.length) return [];
+
+    const buckets = new Map();
+    const addPoint = (lat, lng, amountXRP, txId) => {
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+      const bucketLat = Math.round(lat / ACTIVITY_CELL_SIZE) * ACTIVITY_CELL_SIZE;
+      const bucketLng = Math.round(lng / ACTIVITY_CELL_SIZE) * ACTIVITY_CELL_SIZE;
+      const key = `${bucketLat}:${bucketLng}`;
+      const existing = buckets.get(key) || {
+        lat: bucketLat,
+        lng: bucketLng,
+        txCount: 0,
+        totalXRP: 0,
+        latestTxId: txId,
+      };
+      existing.txCount += 1;
+      existing.totalXRP += Number.isFinite(amountXRP) ? amountXRP : 0;
+      existing.latestTxId = txId;
+      buckets.set(key, existing);
+    };
+
+    transactions.forEach((tx) => {
+      addPoint(tx.startLat, tx.startLng, Number(tx.amountXRP), tx.id);
+      addPoint(tx.endLat, tx.endLng, Number(tx.amountXRP), tx.id);
+    });
+
+    return Array.from(buckets.values());
   }, [transactions]);
 
   const server = networkHealth?.server;
@@ -184,6 +220,8 @@ const XRPLGlobe = () => {
           <>
             <p>Recent Txs: {transactions.length}</p>
             <p>Mapped Arcs: {flowStats.arcCount}</p>
+            <p>Mapped Endpoints: {flowStats.endpointCount}</p>
+            <p>Activity Cells: {activityNodes.length}</p>
             <p>Filter: Payments ≥ {minPaymentXRP.toLocaleString()} XRP</p>
             <p>Total Visible Flow: {flowStats.totalXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
             <p>Largest Visible Tx: {flowStats.maxXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
@@ -280,6 +318,24 @@ const XRPLGlobe = () => {
           <b>${d.type}</b><br/>
           Amount: ${d.amountXRP != null ? `${d.amountXRP.toLocaleString()} XRP` : "N/A"}<br/>
           ${d.id}
+        `}
+        ringsData={mode === MODE.FLOW ? activityNodes : []}
+        ringLat={(d) => d.lat}
+        ringLng={(d) => d.lng}
+        ringColor={(d) => {
+          if (d.totalXRP >= 100000) return "rgba(46, 229, 221, 0.88)";
+          if (d.totalXRP >= 10000) return "rgba(104, 239, 255, 0.8)";
+          return "rgba(156, 243, 255, 0.72)";
+        }}
+        ringAltitude={0.016}
+        ringMaxRadius={(d) => Math.min(4.8, 0.95 + Math.log10((d.totalXRP || 1) + 1) * 0.8)}
+        ringPropagationSpeed={1.2}
+        ringRepeatPeriod={1000}
+        ringLabel={(d) => `
+          <b>Regional Activity</b><br/>
+          Tx endpoints: ${d.txCount}<br/>
+          Flow: ${d.totalXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP<br/>
+          Latest Tx: ${d.latestTxId}
         `}
       />
     </div>

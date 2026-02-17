@@ -45,6 +45,8 @@ export function useXRPLTransactions(url) {
               const newTx = {
                 id: tx.hash,
                 hasArcGeo,
+                sourceGeo,
+                destGeo,
                 startLat: sourceGeo?.latitude,
                 startLng: sourceGeo?.longitude,
                 endLat: destGeo?.latitude,
