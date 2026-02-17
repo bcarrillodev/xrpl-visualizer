@@ -147,10 +147,21 @@ func (s *Server) handleHealth(c *gin.Context) {
 // handleGetValidators returns the list of validators
 func (s *Server) handleGetValidators(c *gin.Context) {
 	validators := s.validatorFetcher.GetValidators()
+	lastUpdate := s.validatorFetcher.GetLastUpdate()
+	etag := fmt.Sprintf("W/\"validators-%d-%d\"", lastUpdate.UnixNano(), len(validators))
+
+	c.Header("Cache-Control", "public, max-age=30, stale-while-revalidate=300")
+	c.Header("ETag", etag)
+
+	if inm := c.GetHeader("If-None-Match"); inm != "" && inm == etag {
+		c.Status(http.StatusNotModified)
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"validators": validators,
 		"count":      len(validators),
-		"timestamp":  s.validatorFetcher.GetLastUpdate(),
+		"timestamp":  lastUpdate,
 	})
 }
 

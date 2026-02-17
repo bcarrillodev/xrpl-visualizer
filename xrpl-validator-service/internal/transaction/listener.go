@@ -139,9 +139,6 @@ func (l *Listener) handleMessage(msg interface{}) {
 	}
 
 	l.enrichTransaction(context.Background(), tx)
-	if tx.SourceInfo == nil || tx.DestInfo == nil {
-		return
-	}
 
 	select {
 	case l.transactionBuffer <- tx:

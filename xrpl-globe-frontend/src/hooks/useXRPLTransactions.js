@@ -39,27 +39,25 @@ export function useXRPLTransactions(url) {
             const tx = JSON.parse(event.data);
             const sourceGeo = tx.source_info || tx.sourceInfo;
             const destGeo = tx.dest_info || tx.destInfo;
+            const hasArcGeo = Boolean(sourceGeo && destGeo);
 
-            if (sourceGeo && destGeo) {
-              setTransactions(prev => {
-                const newTx = {
-                  id: tx.hash,
-                  startLat: sourceGeo.latitude,
-                  startLng: sourceGeo.longitude,
-                  endLat: destGeo.latitude,
-                  endLng: destGeo.longitude,
-                  amountDrops: tx.amount,
-                  amountXRP: formatDropsToXRP(tx.amount),
-                  stroke: getAmountStroke(tx.amount),
-                  color: getAmountColor(tx.amount),
-                  type: tx.transaction_type
-                };
-                // Add new tx to top, keep list size manageable
-                return [newTx, ...prev].slice(0, MAX_TRANSACTIONS);
-              });
-            } else {
-              console.warn("Transaction missing geolocation data:", tx);
-            }
+            setTransactions(prev => {
+              const newTx = {
+                id: tx.hash,
+                hasArcGeo,
+                startLat: sourceGeo?.latitude,
+                startLng: sourceGeo?.longitude,
+                endLat: destGeo?.latitude,
+                endLng: destGeo?.longitude,
+                amountDrops: tx.amount,
+                amountXRP: formatDropsToXRP(tx.amount),
+                stroke: getAmountStroke(tx.amount),
+                color: getAmountColor(tx.amount),
+                type: tx.transaction_type
+              };
+              // Add new tx to top, keep list size manageable
+              return [newTx, ...prev].slice(0, MAX_TRANSACTIONS);
+            });
           } catch (e) {
             console.error("Error parsing transaction:", e);
             setConnectionError(`Failed to parse transaction: ${e.message}`);

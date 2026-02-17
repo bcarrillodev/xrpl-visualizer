@@ -15,7 +15,7 @@ A Go service that fetches verified validators from the XRP Ledger mainnet and st
 ## Prerequisites
 
 - Go 1.21+
-- Running rippled server (Docker container recommended)
+- Running rippled server (Docker container recommended, required only for `local`/`hybrid` validator path)
 - Docker (optional, for containerized deployment)
 
 ## Installation
@@ -62,8 +62,11 @@ services:
     depends_on:
       - rippled
     environment:
+      XRPL_SOURCE_MODE: hybrid
       RIPPLED_JSON_RPC_URL: http://rippled:5005
       RIPPLED_WEBSOCKET_URL: ws://rippled:6006
+      PUBLIC_RIPPLED_JSON_RPC_URL: https://xrplcluster.com
+      PUBLIC_RIPPLED_WEBSOCKET_URL: wss://xrplcluster.com
       XRPL_NETWORK: mainnet
       LISTEN_PORT: 8080
       LISTEN_ADDR: 0.0.0.0
@@ -87,8 +90,11 @@ Configure via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `XRPL_SOURCE_MODE` | `hybrid` | Source selection: `local`, `public`, or `hybrid` |
 | `RIPPLED_JSON_RPC_URL` | `http://localhost:5005` | rippled JSON-RPC endpoint URL |
 | `RIPPLED_WEBSOCKET_URL` | `ws://localhost:6006` | rippled WebSocket endpoint URL |
+| `PUBLIC_RIPPLED_JSON_RPC_URL` | `https://xrplcluster.com` | Public JSON-RPC endpoint used in `public`/`hybrid` modes |
+| `PUBLIC_RIPPLED_WEBSOCKET_URL` | `wss://xrplcluster.com` | Public WebSocket endpoint used in `public`/`hybrid` modes |
 | `XRPL_NETWORK` | `mainnet` | Network label returned with validator data |
 | `LISTEN_ADDR` | `0.0.0.0` | HTTP server listen address |
 | `LISTEN_PORT` | `8080` | HTTP server listen port |
@@ -97,6 +103,12 @@ Configure via environment variables:
 | `SECONDARY_VALIDATOR_REGISTRY_URL` | `https://api.xrpscan.com/api/v1/validatorregistry` | Secondary validator metadata source for domain enrichment |
 | `MIN_PAYMENT_DROPS` | `1000000000` | Minimum streamed payment amount in drops (1,000 XRP) |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
+
+### Source Modes
+
+- `local`: validators + transactions use local rippled only.
+- `public`: validators + transactions use public endpoints only.
+- `hybrid` (default): transactions use public endpoint immediately; validators/health prefer local rippled when reachable, otherwise fallback to public.
 
 ## API Endpoints
 
@@ -255,6 +267,10 @@ go build ./cmd/validator-service
 
 ```bash
 RIPPLED_JSON_RPC_URL=http://localhost:5005 \
+RIPPLED_WEBSOCKET_URL=ws://localhost:6006 \
+PUBLIC_RIPPLED_JSON_RPC_URL=https://xrplcluster.com \
+PUBLIC_RIPPLED_WEBSOCKET_URL=wss://xrplcluster.com \
+XRPL_SOURCE_MODE=hybrid \
 XRPL_NETWORK=mainnet \
 VALIDATOR_LIST_SITES=https://vl.ripple.com,https://unl.xrplf.org \
 SECONDARY_VALIDATOR_REGISTRY_URL=https://api.xrpscan.com/api/v1/validatorregistry \
@@ -281,12 +297,15 @@ LOG_LEVEL=debug \
 - Ensure rippled is running on the configured host/port
 - Check `RIPPLED_JSON_RPC_URL` and `RIPPLED_WEBSOCKET_URL` environment variables
 - Verify network connectivity between service and rippled
+- If local rippled is still syncing, use `XRPL_SOURCE_MODE=hybrid` or `XRPL_SOURCE_MODE=public` to keep transaction flow live
 
 ### No validators returned
 
 - Ensure rippled has fully synced
 - Check rippled logs for validation errors
 - Verify the service has fetched data (check logs)
+- Verify `VALIDATOR_LIST_SITES` and `SECONDARY_VALIDATOR_REGISTRY_URL` are reachable from the service
+- In `hybrid` mode, validator fetching will fallback to public if local server info is unavailable
 
 ### WebSocket clients not receiving transactions
 

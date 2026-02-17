@@ -7,6 +7,8 @@ const MODE = {
   FLOW: "flow",
   HEALTH: "health",
 };
+const VALIDATOR_REFRESH_MS = 5 * 60 * 1000;
+const VALIDATOR_CACHE_KEY = "xrpl_validators_cache_v1";
 
 const XRPLGlobe = () => {
   const globeEl = useRef();
@@ -23,6 +25,29 @@ const XRPLGlobe = () => {
   useEffect(() => {
     let isMounted = true;
 
+    const readValidatorCache = () => {
+      try {
+        const raw = localStorage.getItem(VALIDATOR_CACHE_KEY);
+        if (!raw) return null;
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed.validators)) return null;
+        return parsed.validators;
+      } catch {
+        return null;
+      }
+    };
+
+    const writeValidatorCache = (cachedValidators) => {
+      try {
+        localStorage.setItem(
+          VALIDATOR_CACHE_KEY,
+          JSON.stringify({ validators: cachedValidators, updatedAt: Date.now() }),
+        );
+      } catch {
+        // ignore localStorage write failures
+      }
+    };
+
     const fetchValidators = () => {
       fetch("http://localhost:8080/validators")
         .then((res) => {
@@ -38,17 +63,26 @@ const XRPLGlobe = () => {
             (v) => v.latitude !== 0 || v.longitude !== 0,
           );
           setValidators(validNodes);
+          writeValidatorCache(validNodes);
           setFetchError(null);
         })
         .catch((err) => {
           if (!isMounted) return;
+          const cached = readValidatorCache();
+          if (cached && cached.length) {
+            setValidators(cached);
+          }
           console.error("Failed to fetch validators:", err);
           setFetchError(`Failed to load validators: ${err.message}`);
         });
     };
 
+    const cached = readValidatorCache();
+    if (cached && cached.length) {
+      setValidators(cached);
+    }
     fetchValidators();
-    const intervalId = setInterval(fetchValidators, 10000);
+    const intervalId = setInterval(fetchValidators, VALIDATOR_REFRESH_MS);
 
     return () => {
       isMounted = false;
@@ -90,7 +124,7 @@ const XRPLGlobe = () => {
 
   const flowStats = useMemo(() => {
     if (!transactions.length) {
-      return { totalXRP: 0, maxXRP: 0 };
+      return { totalXRP: 0, maxXRP: 0, arcCount: 0 };
     }
     const amounts = transactions
       .map((tx) => Number(tx.amountXRP))
@@ -98,6 +132,7 @@ const XRPLGlobe = () => {
     return {
       totalXRP: amounts.reduce((acc, cur) => acc + cur, 0),
       maxXRP: amounts.reduce((acc, cur) => Math.max(acc, cur), 0),
+      arcCount: transactions.filter((tx) => tx.hasArcGeo).length,
     };
   }, [transactions]);
 
@@ -130,6 +165,7 @@ const XRPLGlobe = () => {
         {mode === MODE.FLOW && (
           <>
             <p>Recent Txs: {transactions.length}</p>
+            <p>Mapped Arcs: {flowStats.arcCount}</p>
             <p>Filter: Payments ≥ {minPaymentXRP.toLocaleString()} XRP</p>
             <p>Total Visible Flow: {flowStats.totalXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
             <p>Largest Visible Tx: {flowStats.maxXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
@@ -211,7 +247,7 @@ const XRPLGlobe = () => {
           <b>${d.name || d.address}</b><br/>
           ${d.city || "Unknown"}, ${d.country_code || "XX"}
         `}
-        arcsData={mode === MODE.FLOW ? transactions : []}
+        arcsData={mode === MODE.FLOW ? transactions.filter((tx) => tx.hasArcGeo) : []}
         arcStartLat={(d) => d.startLat}
         arcStartLng={(d) => d.startLng}
         arcEndLat={(d) => d.endLat}

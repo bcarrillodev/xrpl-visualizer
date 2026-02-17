@@ -9,10 +9,17 @@ import (
 )
 
 type Config struct {
-	// Rippled Configuration
+	// Source Selection
+	SourceMode string // local | public | hybrid
+	Network    string
+
+	// Local Rippled Configuration
 	RippledJSONRPCURL   string
 	RippledWebSocketURL string
-	Network             string
+
+	// Public Rippled Configuration
+	PublicRippledJSONRPCURL   string
+	PublicRippledWebSocketURL string
 
 	// Server Configuration
 	ListenPort         int
@@ -36,8 +43,11 @@ func NewConfig() *Config {
 	corsOrigins := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 	validatorListSites := getEnv("VALIDATOR_LIST_SITES", "https://vl.ripple.com,https://unl.xrplf.org")
 	cfg := &Config{
+		SourceMode:                    strings.ToLower(getEnv("XRPL_SOURCE_MODE", "hybrid")),
 		RippledJSONRPCURL:             getEnv("RIPPLED_JSON_RPC_URL", "http://localhost:5005"),
 		RippledWebSocketURL:           getEnv("RIPPLED_WEBSOCKET_URL", "ws://localhost:6006"),
+		PublicRippledJSONRPCURL:       getEnv("PUBLIC_RIPPLED_JSON_RPC_URL", "https://xrplcluster.com"),
+		PublicRippledWebSocketURL:     getEnv("PUBLIC_RIPPLED_WEBSOCKET_URL", "wss://xrplcluster.com"),
 		Network:                       strings.ToLower(getEnv("XRPL_NETWORK", "mainnet")),
 		ListenPort:                    getEnvInt("LISTEN_PORT", 8080),
 		ListenAddr:                    getEnv("LISTEN_ADDR", "0.0.0.0"),
@@ -102,6 +112,17 @@ func (c *Config) Validate() error {
 	}
 	if c.RippledWebSocketURL == "" {
 		return fmt.Errorf("rippled WebSocket URL cannot be empty")
+	}
+	if c.PublicRippledJSONRPCURL == "" {
+		return fmt.Errorf("public rippled JSON RPC URL cannot be empty")
+	}
+	if c.PublicRippledWebSocketURL == "" {
+		return fmt.Errorf("public rippled WebSocket URL cannot be empty")
+	}
+	switch c.SourceMode {
+	case "local", "public", "hybrid":
+	default:
+		return fmt.Errorf("invalid source mode: %s", c.SourceMode)
 	}
 	if c.Network == "" {
 		return fmt.Errorf("network cannot be empty")

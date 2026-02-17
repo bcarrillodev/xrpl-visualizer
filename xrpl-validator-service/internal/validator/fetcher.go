@@ -20,6 +20,7 @@ import (
 type Fetcher struct {
 	client               rippled.RippledClient
 	logger               *logrus.Logger
+	clientMu             sync.RWMutex
 	mu                   sync.RWMutex
 	validators           map[string]*models.Validator // Address -> Validator
 	lastUpdate           time.Time
@@ -102,6 +103,19 @@ func (f *Fetcher) Start(ctx context.Context) {
 // Stop stops the periodic fetching
 func (f *Fetcher) Stop() {
 	close(f.stopChan)
+}
+
+// SetClient updates the rippled client used for validator/health RPC calls.
+func (f *Fetcher) SetClient(client rippled.RippledClient) {
+	f.clientMu.Lock()
+	f.client = client
+	f.clientMu.Unlock()
+}
+
+func (f *Fetcher) getClient() rippled.RippledClient {
+	f.clientMu.RLock()
+	defer f.clientMu.RUnlock()
+	return f.client
 }
 
 // Fetch retrieves current validators from rippled
@@ -190,7 +204,8 @@ func (f *Fetcher) GetLastUpdate() time.Time {
 
 // GetServerStatus retrieves current rippled server health information.
 func (f *Fetcher) GetServerStatus(ctx context.Context) (*models.ServerStatus, error) {
-	result, err := f.client.GetServerInfo(ctx)
+	client := f.getClient()
+	result, err := client.GetServerInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +370,8 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 }
 
 func (f *Fetcher) fetchTrustedValidatorsFromRippled(ctx context.Context) ([]*models.Validator, map[string]struct{}, error) {
-	resp, err := f.client.Command(ctx, "validators", map[string]interface{}{})
+	client := f.getClient()
+	resp, err := client.Command(ctx, "validators", map[string]interface{}{})
 	if err != nil {
 		return nil, nil, err
 	}
