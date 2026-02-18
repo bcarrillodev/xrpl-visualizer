@@ -35,8 +35,8 @@ func TestNewConfig(t *testing.T) {
 	if cfg.ValidatorRefreshInterval != 300 {
 		t.Errorf("Expected ValidatorRefreshInterval 300, got %d", cfg.ValidatorRefreshInterval)
 	}
-	if cfg.MinPaymentDrops != 1000000000 {
-		t.Errorf("Expected MinPaymentDrops 1000000000, got %d", cfg.MinPaymentDrops)
+	if cfg.MinPaymentDrops != 10000000000 {
+		t.Errorf("Expected MinPaymentDrops 10000000000, got %d", cfg.MinPaymentDrops)
 	}
 	expectedSites := []string{"https://unl.xrplf.org", "https://vl.ripple.com"}
 	if len(cfg.ValidatorListSites) != len(expectedSites) {
@@ -176,7 +176,7 @@ func validConfig() *Config {
 		GeoCachePath:                  "data/geolocation-cache.json",
 		GeoLookupMinIntervalMS:        1200,
 		GeoRateLimitCooldownSeconds:   900,
-		MinPaymentDrops:               1000000000,
+		MinPaymentDrops:               10000000000,
 		CORSAllowedOrigins:            []string{"http://localhost:3000"},
 	}
 }

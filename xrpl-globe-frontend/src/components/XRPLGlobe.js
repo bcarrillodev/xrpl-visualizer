@@ -142,7 +142,7 @@ const XRPLGlobe = () => {
 
   const flowStats = useMemo(() => {
     if (!transactions.length) {
-      return { totalXRP: 0, maxXRP: 0, arcCount: 0, endpointCount: 0 };
+      return { avgXRP: 0, maxXRP: 0, arcCount: 0, endpointCount: 0 };
     }
     const amounts = transactions
       .map((tx) => Number(tx.amountXRP))
@@ -153,8 +153,8 @@ const XRPLGlobe = () => {
       return acc + (hasSource ? 1 : 0) + (hasDest ? 1 : 0);
     }, 0);
     return {
-      totalXRP: amounts.reduce((acc, cur) => acc + cur, 0),
-      maxXRP: amounts.reduce((acc, cur) => Math.max(acc, cur), 0),
+      avgXRP: amounts.length ? amounts.reduce((acc, cur) => acc + cur, 0) / amounts.length : 0,
+      maxXRP: amounts.length ? amounts.reduce((acc, cur) => Math.max(acc, cur), 0) : 0,
       arcCount: transactions.filter((tx) => tx.hasArcGeo).length,
       endpointCount,
     };
@@ -223,8 +223,8 @@ const XRPLGlobe = () => {
             <p>Mapped Endpoints: {flowStats.endpointCount}</p>
             <p>Activity Cells: {activityNodes.length}</p>
             <p>Filter: Payments ≥ {minPaymentXRP.toLocaleString()} XRP</p>
-            <p>Total Visible Flow: {flowStats.totalXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
-            <p>Largest Visible Tx: {flowStats.maxXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
+            <p>Avg Recent Tx: {flowStats.avgXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
+            <p>Largest Recent Tx: {flowStats.maxXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
           </>
         )}
 

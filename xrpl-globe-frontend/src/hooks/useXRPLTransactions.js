@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 
-const MAX_TRANSACTIONS = 50; // Keep last 50 for visual trails
+const MAX_TRANSACTIONS = 100; // Keep last 100 for visual trails
 
 export function useXRPLTransactions(url) {
   const [transactions, setTransactions] = useState([]);
@@ -40,6 +40,12 @@ export function useXRPLTransactions(url) {
             const sourceGeo = tx.source_info || tx.sourceInfo;
             const destGeo = tx.dest_info || tx.destInfo;
             const hasArcGeo = Boolean(sourceGeo && destGeo);
+            const amountXRP = formatDropsToXRP(tx.amount);
+
+            if (amountXRP == null) {
+              // Skip malformed/non-drop amounts to keep all displayed values in XRP.
+              return;
+            }
 
             setTransactions(prev => {
               const newTx = {
@@ -52,9 +58,9 @@ export function useXRPLTransactions(url) {
                 endLat: destGeo?.latitude,
                 endLng: destGeo?.longitude,
                 amountDrops: tx.amount,
-                amountXRP: formatDropsToXRP(tx.amount),
-                stroke: getAmountStroke(tx.amount),
-                color: getAmountColor(tx.amount),
+                amountXRP,
+                stroke: getAmountStroke(amountXRP),
+                color: getAmountColor(amountXRP),
                 type: tx.transaction_type
               };
               // Add new tx to top, keep list size manageable
@@ -123,16 +129,14 @@ function formatDropsToXRP(drops) {
   return n / 1_000_000;
 }
 
-function getAmountStroke(drops) {
-  const xrp = formatDropsToXRP(drops);
-  if (xrp == null || xrp <= 0) return 0.4;
+function getAmountStroke(xrp) {
+  if (!Number.isFinite(xrp) || xrp <= 0) return 0.4;
   const normalized = Math.min(1, Math.log10(xrp) / 8);
   return 0.4 + (normalized * 1.8);
 }
 
-function getAmountColor(drops) {
-  const xrp = formatDropsToXRP(drops);
-  if (xrp == null) return '#7fd3ff';
+function getAmountColor(xrp) {
+  if (!Number.isFinite(xrp)) return '#7fd3ff';
   if (xrp >= 1_000_000) return '#ff365e';
   if (xrp >= 100_000) return '#ff8a2a';
   if (xrp >= 10_000) return '#ffdf2b';

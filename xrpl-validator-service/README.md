@@ -77,7 +77,7 @@ services:
       GEO_CACHE_PATH: data/geolocation-cache.json
       GEO_LOOKUP_MIN_INTERVAL_MS: 1200
       GEO_RATE_LIMIT_COOLDOWN_SECONDS: 900
-      MIN_PAYMENT_DROPS: 1000000000
+      MIN_PAYMENT_DROPS: 10000000000
       LOG_LEVEL: info
     container_name: xrpl-validator-service
     restart: unless-stopped
@@ -109,7 +109,7 @@ Configure via environment variables:
 | `GEO_CACHE_PATH` | `data/geolocation-cache.json` | Persistent geolocation cache path (survives process restarts) |
 | `GEO_LOOKUP_MIN_INTERVAL_MS` | `1200` | Minimum delay between outbound geolocation lookups |
 | `GEO_RATE_LIMIT_COOLDOWN_SECONDS` | `900` | Cooldown window after a geolocation provider `429` |
-| `MIN_PAYMENT_DROPS` | `1000000000` | Minimum streamed payment amount in drops (1,000 XRP) |
+| `MIN_PAYMENT_DROPS` | `10000000000` | Minimum streamed payment amount in drops (10,000 XRP) |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
 
 ### Source Modes
@@ -178,7 +178,7 @@ Response:
 
 **GET /transactions** (WebSocket upgrade)
 
-Establishes a WebSocket connection for streaming validated XRP `Payment` transactions where amount is at least `MIN_PAYMENT_DROPS` (default `1,000 XRP`).
+Establishes a WebSocket connection for streaming validated XRP `Payment` transactions where amount is at least `MIN_PAYMENT_DROPS` (default `10,000 XRP`).
 
 ```javascript
 // JavaScript example
@@ -286,7 +286,7 @@ VALIDATOR_METADATA_CACHE_PATH=data/validator-metadata-cache.json \
 GEO_CACHE_PATH=data/geolocation-cache.json \
 GEO_LOOKUP_MIN_INTERVAL_MS=1200 \
 GEO_RATE_LIMIT_COOLDOWN_SECONDS=900 \
-MIN_PAYMENT_DROPS=1000000000 \
+MIN_PAYMENT_DROPS=10000000000 \
 LISTEN_PORT=9000 \
 LOG_LEVEL=debug \
 ./validator-service

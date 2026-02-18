@@ -63,7 +63,7 @@ func NewConfig() *Config {
 		GeoCachePath:                  getEnv("GEO_CACHE_PATH", "data/geolocation-cache.json"),
 		GeoLookupMinIntervalMS:        getEnvInt("GEO_LOOKUP_MIN_INTERVAL_MS", 1200),
 		GeoRateLimitCooldownSeconds:   getEnvInt("GEO_RATE_LIMIT_COOLDOWN_SECONDS", 900),
-		MinPaymentDrops:               getEnvInt64("MIN_PAYMENT_DROPS", 1000000000), // 1000 XRP
+		MinPaymentDrops:               getEnvInt64("MIN_PAYMENT_DROPS", 10000000000), // 10,000 XRP
 		LogLevel:                      getEnv("LOG_LEVEL", "info"),
 	}
 	return cfg
