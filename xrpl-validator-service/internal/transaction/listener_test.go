@@ -1,6 +1,23 @@
 package transaction
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/brandon/xrpl-validator-service/internal/models"
+	"github.com/brandon/xrpl-validator-service/internal/rippled"
+)
+
+type mockGeoResolver struct {
+	locations map[string]*models.GeoLocation
+}
+
+func (m *mockGeoResolver) ResolveAccountGeo(ctx context.Context, client rippled.RippledClient, account string) (*models.GeoLocation, error) {
+	if geo, ok := m.locations[account]; ok {
+		return geo, nil
+	}
+	return nil, nil
+}
 
 func containsAccount(accounts []string, expected string) bool {
 	for _, account := range accounts {
@@ -202,5 +219,53 @@ func TestGatherGeoCandidates_LimitPreservesSourceAndDestination(t *testing.T) {
 	}
 	if candidates[1] != destination {
 		t.Fatalf("expected destination second, got %+v", candidates)
+	}
+}
+
+func TestEnrichTransaction_PopulatesLocations(t *testing.T) {
+	source := "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
+	destination := "rLHzPsX6oXkzU9cRHEwKmMSWJfpJ9nE4VY"
+	issuer := "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"
+
+	resolver := &mockGeoResolver{
+		locations: map[string]*models.GeoLocation{
+			source: {
+				Latitude:  37.7749,
+				Longitude: -122.4194,
+				City:      "San Francisco",
+			},
+			destination: {
+				Latitude:  51.5074,
+				Longitude: -0.1278,
+				City:      "London",
+			},
+			issuer: {
+				Latitude:  35.6762,
+				Longitude: 139.6503,
+				City:      "Tokyo",
+			},
+		},
+	}
+	listener := NewListener(nil, 1, resolver, nil)
+
+	tx := &models.Transaction{
+		Account:       source,
+		Destination:   destination,
+		GeoCandidates: []string{issuer},
+	}
+
+	listener.enrichTransaction(context.Background(), tx)
+
+	if len(tx.Locations) != 3 {
+		t.Fatalf("expected 3 mapped locations, got %d", len(tx.Locations))
+	}
+	if tx.Locations[0].City != "San Francisco" {
+		t.Fatalf("expected source location first, got %+v", tx.Locations[0])
+	}
+	if tx.Locations[1].City != "London" {
+		t.Fatalf("expected destination location second, got %+v", tx.Locations[1])
+	}
+	if tx.Locations[2].City != "Tokyo" {
+		t.Fatalf("expected extra candidate location third, got %+v", tx.Locations[2])
 	}
 }

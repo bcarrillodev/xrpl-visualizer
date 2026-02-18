@@ -59,19 +59,21 @@ func TestTransactionJSON(t *testing.T) {
 		Timestamp:         now,
 		CloseTime:         1640995200,
 		Validated:         true,
-		SourceInfo: &GeoLocation{
-			Latitude:         40.7128,
-			Longitude:        -74.0060,
-			CountryCode:      "US",
-			City:             "New York",
-			ValidatorAddress: "rSource",
-		},
-		DestInfo: &GeoLocation{
-			Latitude:         51.5074,
-			Longitude:        -0.1278,
-			CountryCode:      "GB",
-			City:             "London",
-			ValidatorAddress: "rDest",
+		Locations: []*GeoLocation{
+			{
+				Latitude:         40.7128,
+				Longitude:        -74.0060,
+				CountryCode:      "US",
+				City:             "New York",
+				ValidatorAddress: "rSource",
+			},
+			{
+				Latitude:         51.5074,
+				Longitude:        -0.1278,
+				CountryCode:      "GB",
+				City:             "London",
+				ValidatorAddress: "rDest",
+			},
 		},
 	}
 
@@ -91,11 +93,14 @@ func TestTransactionJSON(t *testing.T) {
 	if tx2.TransactionType != tx.TransactionType {
 		t.Errorf("Expected TransactionType %s, got %s", tx.TransactionType, tx2.TransactionType)
 	}
-	if tx2.SourceInfo == nil || tx2.SourceInfo.City != tx.SourceInfo.City {
-		t.Errorf("Expected SourceInfo City %s, got %v", tx.SourceInfo.City, tx2.SourceInfo)
+	if len(tx2.Locations) != len(tx.Locations) {
+		t.Fatalf("Expected %d locations, got %d", len(tx.Locations), len(tx2.Locations))
 	}
-	if tx2.DestInfo == nil || tx2.DestInfo.City != tx.DestInfo.City {
-		t.Errorf("Expected DestInfo City %s, got %v", tx.DestInfo.City, tx2.DestInfo)
+	if tx2.Locations[0].City != tx.Locations[0].City {
+		t.Errorf("Expected first location city %s, got %s", tx.Locations[0].City, tx2.Locations[0].City)
+	}
+	if tx2.Locations[1].City != tx.Locations[1].City {
+		t.Errorf("Expected second location city %s, got %s", tx.Locations[1].City, tx2.Locations[1].City)
 	}
 }
 

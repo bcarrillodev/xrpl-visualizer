@@ -10,7 +10,7 @@ const MODE = {
 const FAST_RETRY_MS = 10 * 1000;
 const VALIDATOR_REFRESH_MS = 5 * 60 * 1000;
 const VALIDATOR_CACHE_KEY = "xrpl_validators_cache_v1";
-const ACTIVITY_CELL_SIZE = 1; // degrees
+const ACTIVITY_CELL_SIZE = 1;
 const API_BASE_URL = (process.env.REACT_APP_API_BASE || "http://localhost:8080").replace(/\/+$/, "");
 const TRANSACTION_WS_URL = (process.env.REACT_APP_TX_WS_URL || `${API_BASE_URL.replace(/^http/i, "ws")}/transactions`).replace(/\/+$/, "");
 
@@ -48,8 +48,8 @@ const XRPLGlobe = () => {
           VALIDATOR_CACHE_KEY,
           JSON.stringify({ validators: cachedValidators, updatedAt: Date.now() }),
         );
-      } catch {
-        // ignore localStorage write failures
+      } catch (err) {
+        console.error("Failed to write validator cache:", err);
       }
     };
 
@@ -177,9 +177,7 @@ const XRPLGlobe = () => {
     };
 
     transactions.forEach((tx) => {
-      addPoint(tx.startLat, tx.startLng, Number(tx.amountXRP), tx.id);
-      addPoint(tx.endLat, tx.endLng, Number(tx.amountXRP), tx.id);
-      (tx.extraGeoPoints || []).forEach((point) => {
+      (tx.geoPoints || []).forEach((point) => {
         addPoint(point.latitude, point.longitude, Number(tx.amountXRP), tx.id);
       });
     });
@@ -297,22 +295,6 @@ const XRPLGlobe = () => {
         pointLabel={(d) => `
           <b>${d.name || d.address}</b><br/>
           ${d.city || "Unknown"}, ${d.country_code || "XX"}
-        `}
-        arcsData={mode === MODE.FLOW ? transactions.filter((tx) => tx.hasArcGeo) : []}
-        arcStartLat={(d) => d.startLat}
-        arcStartLng={(d) => d.startLng}
-        arcEndLat={(d) => d.endLat}
-        arcEndLng={(d) => d.endLng}
-        arcColor={(d) => d.color}
-        arcDashLength={0.4}
-        arcDashGap={2}
-        arcDashInitialGap={1}
-        arcDashAnimateTime={1800}
-        arcStroke={(d) => d.stroke || 0.5}
-        arcLabel={(d) => `
-          <b>${d.type}</b><br/>
-          Amount: ${d.amountXRP != null ? `${d.amountXRP.toLocaleString()} XRP` : "N/A"}<br/>
-          ${d.id}
         `}
         ringsData={mode === MODE.FLOW ? activityNodes : []}
         ringLat={(d) => d.lat}

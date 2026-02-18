@@ -1,5 +1,0 @@
-[validator_list_sites]
-https://unl.xrplf.org
-
-[validator_list_keys]
-ED42AEC58B701EEBB77356FFFEC26F83C1F0407263530F068C7C73D392C7E06FD1

@@ -201,9 +201,8 @@ ws.onmessage = (event) => {
   //   "destination": "rLHzPsX6oXkzU9cRHEwKmMSWJfpJ9nE4VY",
   //   "amount": "25000000000",
   //   "transaction_type": "Payment",
-  //   "source_info": { "latitude": 40.7128, "longitude": -74.0060, ... },
-  //   "dest_info": { "latitude": 51.5074, "longitude": -0.1278, ... },
-  //   "extra_info": [
+  //   "locations": [
+  //     { "latitude": 40.7128, "longitude": -74.0060, "validator_address": "r..." },
   //     { "latitude": 35.6895, "longitude": 139.6917, "validator_address": "r..." }
   //   ],
   //   ...

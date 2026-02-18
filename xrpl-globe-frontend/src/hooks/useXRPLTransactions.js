@@ -22,7 +22,12 @@ export function useXRPLTransactions(url, healthUrl = 'http://localhost:8080/heal
 
     function connect() {
       if (isUnmounted) return;
-      if (ws.current && ws.current.readyState === WebSocket.OPEN) return;
+      if (
+        ws.current &&
+        (ws.current.readyState === WebSocket.OPEN || ws.current.readyState === WebSocket.CONNECTING)
+      ) {
+        return;
+      }
 
       try {
         ws.current = new WebSocket(url);
@@ -37,15 +42,18 @@ export function useXRPLTransactions(url, healthUrl = 'http://localhost:8080/heal
         ws.current.onmessage = (event) => {
           try {
             const tx = JSON.parse(event.data);
-            const sourceGeo = tx.source_info || tx.sourceInfo;
-            const destGeo = tx.dest_info || tx.destInfo;
-            const extraGeo = tx.extra_info || tx.extraInfo;
-            const hasSourceGeo = Number.isFinite(sourceGeo?.latitude) && Number.isFinite(sourceGeo?.longitude);
-            const hasDestGeo = Number.isFinite(destGeo?.latitude) && Number.isFinite(destGeo?.longitude);
-            const hasArcGeo = hasSourceGeo && hasDestGeo;
-            const extraGeoPoints = Array.isArray(extraGeo)
-              ? extraGeo.filter((point) => Number.isFinite(point?.latitude) && Number.isFinite(point?.longitude))
-              : [];
+            const locations = [];
+            const appendLocation = (point) => {
+              if (!Number.isFinite(point?.latitude) || !Number.isFinite(point?.longitude)) {
+                return;
+              }
+              locations.push(point);
+            };
+
+            if (Array.isArray(tx.locations)) {
+              tx.locations.forEach(appendLocation);
+            }
+
             const amountXRP = formatDropsToXRP(tx.amount);
 
             if (amountXRP == null) {
@@ -56,18 +64,9 @@ export function useXRPLTransactions(url, healthUrl = 'http://localhost:8080/heal
             setTransactions(prev => {
               const newTx = {
                 id: tx.hash,
-                hasArcGeo,
-                sourceGeo,
-                destGeo,
-                startLat: sourceGeo?.latitude,
-                startLng: sourceGeo?.longitude,
-                endLat: destGeo?.latitude,
-                endLng: destGeo?.longitude,
-                extraGeoPoints,
+                geoPoints: locations,
                 amountDrops: tx.amount,
                 amountXRP,
-                stroke: getAmountStroke(amountXRP),
-                color: getAmountColor(amountXRP),
                 type: tx.transaction_type
               };
               // Add new tx to top, keep list size manageable
@@ -109,10 +108,11 @@ export function useXRPLTransactions(url, healthUrl = 'http://localhost:8080/heal
     // Wait for backend to be ready before connecting
     const initConnection = async () => {
       let ready = await checkBackendReady();
-      while (!ready) {
+      while (!ready && !isUnmounted) {
         await new Promise(resolve => setTimeout(resolve, 1000));
         ready = await checkBackendReady();
       }
+      if (isUnmounted) return;
       connect();
     };
 
@@ -134,18 +134,4 @@ function formatDropsToXRP(drops) {
   const n = Number(drops);
   if (!Number.isFinite(n)) return null;
   return n / 1_000_000;
-}
-
-function getAmountStroke(xrp) {
-  if (!Number.isFinite(xrp) || xrp <= 0) return 0.4;
-  const normalized = Math.min(1, Math.log10(xrp) / 8);
-  return 0.4 + (normalized * 1.8);
-}
-
-function getAmountColor(xrp) {
-  if (!Number.isFinite(xrp)) return '#7fd3ff';
-  if (xrp >= 1_000_000) return '#ff365e';
-  if (xrp >= 100_000) return '#ff8a2a';
-  if (xrp >= 10_000) return '#ffdf2b';
-  return '#7fd3ff';
 }

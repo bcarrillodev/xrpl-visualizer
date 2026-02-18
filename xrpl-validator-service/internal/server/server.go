@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brandon/xrpl-validator-service/internal/models"
@@ -35,13 +36,17 @@ type Server struct {
 	networkHealthMu     sync.RWMutex
 	lastNetworkHealth   *models.ServerStatus
 	lastNetworkHealthAt time.Time
+	stopBroadcast       chan struct{}
+	stopOnce            sync.Once
+	stopped             atomic.Bool
 }
 
 // WSClient represents a WebSocket client connection
 type WSClient struct {
-	conn   *websocket.Conn
-	send   chan *models.Transaction
-	server *Server
+	conn      *websocket.Conn
+	send      chan *models.Transaction
+	server    *Server
+	closeOnce sync.Once
 }
 
 // NewServer creates a new HTTP server
@@ -79,6 +84,7 @@ func NewServer(
 		wsClients:           make(map[*WSClient]bool),
 		broadcast:           make(chan *models.Transaction, broadcastBufferSize),
 		wsClientBufferSize:  wsClientBufferSize,
+		stopBroadcast:       make(chan struct{}),
 		wsUpgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -154,7 +160,7 @@ func (s *Server) handleHealth(c *gin.Context) {
 		"last_validator_update":       s.validatorFetcher.GetLastUpdate(),
 		"transaction_listener_active": s.transactionListener.IsSubscribed(),
 		"min_payment_drops":           s.transactionListener.MinPaymentDrops(),
-		"websocket_clients":           len(s.wsClients),
+		"websocket_clients":           s.websocketClientCount(),
 	}
 	c.JSON(http.StatusOK, status)
 }
@@ -198,7 +204,7 @@ func (s *Server) handleNetworkHealth(c *gin.Context) {
 				"error":                       err.Error(),
 				"validators_count":            len(s.validatorFetcher.GetValidators()),
 				"transaction_listener_active": s.transactionListener.IsSubscribed(),
-				"websocket_clients":           len(s.wsClients),
+				"websocket_clients":           s.websocketClientCount(),
 				"timestamp":                   time.Now().Unix(),
 			})
 			return
@@ -219,7 +225,7 @@ func (s *Server) handleNetworkHealth(c *gin.Context) {
 		"stale":                       false,
 		"validators_count":            len(s.validatorFetcher.GetValidators()),
 		"transaction_listener_active": s.transactionListener.IsSubscribed(),
-		"websocket_clients":           len(s.wsClients),
+		"websocket_clients":           s.websocketClientCount(),
 		"timestamp":                   time.Now().Unix(),
 	})
 }
@@ -252,6 +258,9 @@ func (s *Server) handleTransactionsWebSocket(c *gin.Context) {
 
 // onTransaction is called when a new transaction is received
 func (s *Server) onTransaction(tx *models.Transaction) {
+	if s.stopped.Load() {
+		return
+	}
 	select {
 	case s.broadcast <- tx:
 	default:
@@ -261,7 +270,17 @@ func (s *Server) onTransaction(tx *models.Transaction) {
 
 // broadcastLoop distributes transactions to all connected clients
 func (s *Server) broadcastLoop() {
-	for tx := range s.broadcast {
+	for {
+		var tx *models.Transaction
+		select {
+		case <-s.stopBroadcast:
+			return
+		case tx = <-s.broadcast:
+		}
+		if tx == nil {
+			continue
+		}
+
 		s.wsMu.RLock()
 		clients := make([]*WSClient, 0, len(s.wsClients))
 		for client := range s.wsClients {
@@ -281,12 +300,19 @@ func (s *Server) broadcastLoop() {
 
 // closeClient closes a WebSocket client connection
 func (s *Server) closeClient(client *WSClient) {
-	s.wsMu.Lock()
-	delete(s.wsClients, client)
-	s.wsMu.Unlock()
-	close(client.send)
-	client.conn.Close()
-	s.logger.WithField("client_addr", client.conn.RemoteAddr()).Info("WebSocket client disconnected")
+	if client == nil {
+		return
+	}
+	client.closeOnce.Do(func() {
+		s.wsMu.Lock()
+		delete(s.wsClients, client)
+		s.wsMu.Unlock()
+		close(client.send)
+		if client.conn != nil {
+			client.conn.Close()
+			s.logger.WithField("client_addr", client.conn.RemoteAddr()).Info("WebSocket client disconnected")
+		}
+	})
 }
 
 func (s *Server) cacheNetworkHealth(status *models.ServerStatus) {
@@ -313,6 +339,25 @@ func (s *Server) getCachedNetworkHealth() (*models.ServerStatus, time.Time, bool
 
 	copy := *s.lastNetworkHealth
 	return &copy, s.lastNetworkHealthAt, true
+}
+
+func (s *Server) websocketClientCount() int {
+	s.wsMu.RLock()
+	defer s.wsMu.RUnlock()
+	return len(s.wsClients)
+}
+
+func (s *Server) closeAllClients() {
+	s.wsMu.RLock()
+	clients := make([]*WSClient, 0, len(s.wsClients))
+	for client := range s.wsClients {
+		clients = append(clients, client)
+	}
+	s.wsMu.RUnlock()
+
+	for _, client := range clients {
+		s.closeClient(client)
+	}
 }
 
 // readPump reads messages from the WebSocket client
@@ -380,13 +425,16 @@ func (s *Server) Start(ctx context.Context) error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Stop gracefully stops the HTTP server and closes broadcast channel
+// Stop gracefully stops the HTTP server and closes client connections.
 func (s *Server) Stop(ctx context.Context) error {
-	if s.httpServer != nil {
-		err := s.httpServer.Shutdown(ctx)
-		// Close broadcast channel to stop broadcastLoop goroutine
-		close(s.broadcast)
-		return err
-	}
-	return nil
+	var stopErr error
+	s.stopOnce.Do(func() {
+		s.stopped.Store(true)
+		close(s.stopBroadcast)
+		s.closeAllClients()
+		if s.httpServer != nil {
+			stopErr = s.httpServer.Shutdown(ctx)
+		}
+	})
+	return stopErr
 }

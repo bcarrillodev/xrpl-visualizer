@@ -426,7 +426,7 @@ func toUnixTimestamp(v interface{}) int64 {
 	return int64(rippleTime) + rippleEpochOffset
 }
 
-// enrichTransaction adds geolocation data to transaction.
+// enrichTransaction adds geolocation points to transaction.
 func (l *Listener) enrichTransaction(ctx context.Context, tx *models.Transaction) {
 	if l.geoResolver == nil || tx == nil {
 		return
@@ -440,8 +440,7 @@ func (l *Listener) enrichTransaction(ctx context.Context, tx *models.Transaction
 		return
 	}
 
-	extras := make([]*models.GeoLocation, 0, len(candidates))
-	seenExtras := make(map[string]struct{})
+	locations := make([]*models.GeoLocation, 0, len(candidates))
 	for _, account := range candidates {
 		lookupCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		geo, err := l.geoResolver.ResolveAccountGeo(lookupCtx, l.client, account)
@@ -454,22 +453,10 @@ func (l *Listener) enrichTransaction(ctx context.Context, tx *models.Transaction
 			continue
 		}
 
-		switch account {
-		case tx.Account:
-			tx.SourceInfo = geo
-		case tx.Destination:
-			tx.DestInfo = geo
-		default:
-			key := fmt.Sprintf("%s:%0.4f:%0.4f", account, geo.Latitude, geo.Longitude)
-			if _, exists := seenExtras[key]; exists {
-				continue
-			}
-			seenExtras[key] = struct{}{}
-			extras = append(extras, geo)
-		}
+		locations = append(locations, geo)
 	}
-	if len(extras) > 0 {
-		tx.ExtraInfo = extras
+	if len(locations) > 0 {
+		tx.Locations = locations
 	}
 }
 

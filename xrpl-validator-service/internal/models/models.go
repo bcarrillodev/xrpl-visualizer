@@ -46,10 +46,8 @@ type Transaction struct {
 
 	// Metadata
 	Validated     bool           `json:"validated"`
-	SourceInfo    *GeoLocation   `json:"source_info,omitempty"` // Enriched source account location
-	DestInfo      *GeoLocation   `json:"dest_info,omitempty"`   // Enriched destination account location
-	ExtraInfo     []*GeoLocation `json:"extra_info,omitempty"`  // Additional mapped account endpoints (e.g. issuers)
-	GeoCandidates []string       `json:"-"`                     // Internal candidate accounts for enrichment
+	Locations     []*GeoLocation `json:"locations,omitempty"` // Mapped account endpoints for hotspot/activity layers
+	GeoCandidates []string       `json:"-"`                   // Internal candidate accounts for enrichment
 }
 
 // GeoLocation represents geographic location data
