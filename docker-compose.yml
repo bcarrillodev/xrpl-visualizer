@@ -1,14 +1,35 @@
 services:
-  # The XRPL Node
-  rippled:
-    image: xrpllabsofficial/xrpld:latest
-    container_name: rippled-server
-    platform: linux/amd64
+  go-validator-service:
+    build:
+      context: ./xrpl-validator-service
+      dockerfile: Dockerfile
     ports:
-      - "5005:5005" # JSON-RPC
-      - "6006:6006" # WebSocket
-      - "51235:51235" # Peer Port
-    volumes:
-      - ./xrpl-node/config:/etc/opt/ripple
-      - ./xrpl-node/db:/var/lib/rippled
+      - "8080:8080"
+    environment:
+      PUBLIC_RIPPLED_JSON_RPC_URL: https://xrplcluster.com
+      PUBLIC_RIPPLED_WEBSOCKET_URL: wss://xrplcluster.com
+      TRANSACTION_JSON_RPC_URL: https://xrplcluster.com
+      TRANSACTION_WEBSOCKET_URL: wss://xrplcluster.com
+      XRPL_NETWORK: mainnet
+      LISTEN_PORT: 8080
+      LISTEN_ADDR: 0.0.0.0
+      VALIDATOR_REFRESH_INTERVAL: 300
+      VALIDATOR_LIST_SITES: https://vl.ripple.com,https://unl.xrplf.org
+      SECONDARY_VALIDATOR_REGISTRY_URL: https://api.xrpscan.com/api/v1/validatorregistry
+      VALIDATOR_METADATA_CACHE_PATH: data/validator-metadata-cache.json
+      NETWORK_HEALTH_JSON_RPC_URLS: https://xrplcluster.com,https://s2.ripple.com:51234
+      NETWORK_HEALTH_RETRIES: 2
+      GEO_CACHE_PATH: data/geolocation-cache.json
+      GEOLITE_DB_PATH: data/GeoLite2-City.mmdb
+      GEOLITE_DOWNLOAD_URL: https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
+      GEOLITE_AUTO_DOWNLOAD: "true"
+      MIN_PAYMENT_DROPS: 1000000
+      TRANSACTION_BUFFER_SIZE: 2048
+      GEO_ENRICHMENT_QUEUE_SIZE: 2048
+      GEO_ENRICHMENT_WORKERS: 8
+      MAX_GEO_CANDIDATES: 6
+      BROADCAST_BUFFER_SIZE: 2048
+      WS_CLIENT_BUFFER_SIZE: 512
+      LOG_LEVEL: info
+    container_name: xrpl-validator-service
     restart: unless-stopped

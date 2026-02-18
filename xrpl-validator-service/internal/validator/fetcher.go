@@ -1,10 +1,12 @@
 package validator
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -66,7 +68,6 @@ type Fetcher struct {
 	client               rippled.RippledClient
 	logger               *logrus.Logger
 	httpClient           *http.Client
-	clientMu             sync.RWMutex
 	mu                   sync.RWMutex
 	validators           map[string]*models.Validator // Address -> Validator
 	lastUpdate           time.Time
@@ -77,6 +78,8 @@ type Fetcher struct {
 	validatorListSites   []string
 	secondaryRegistryURL string
 	metadataCachePath    string
+	networkHealthRPCURLs []string
+	networkHealthRetries int
 	network              string
 	sourceStateMu        sync.Mutex
 	validatorListCache   map[string]*validatorListCacheEntry
@@ -92,7 +95,18 @@ type GeoLocationProvider interface {
 }
 
 // NewFetcher creates a new validator fetcher
-func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geoProvider GeoLocationProvider, validatorListSites []string, secondaryRegistryURL string, metadataCachePath string, network string, logger *logrus.Logger) *Fetcher {
+func NewFetcher(
+	client rippled.RippledClient,
+	refreshInterval time.Duration,
+	geoProvider GeoLocationProvider,
+	validatorListSites []string,
+	secondaryRegistryURL string,
+	metadataCachePath string,
+	networkHealthRPCURLs []string,
+	networkHealthRetries int,
+	network string,
+	logger *logrus.Logger,
+) *Fetcher {
 	if logger == nil {
 		logger = logrus.New()
 	}
@@ -115,6 +129,25 @@ func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geo
 	if strings.TrimSpace(metadataCachePath) == "" {
 		metadataCachePath = "data/validator-metadata-cache.json"
 	}
+	endpoints := make([]string, 0, len(networkHealthRPCURLs))
+	seenEndpoints := make(map[string]struct{}, len(networkHealthRPCURLs))
+	for _, endpoint := range networkHealthRPCURLs {
+		trimmed := strings.TrimSpace(endpoint)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seenEndpoints[trimmed]; exists {
+			continue
+		}
+		seenEndpoints[trimmed] = struct{}{}
+		endpoints = append(endpoints, trimmed)
+	}
+	if len(endpoints) == 0 {
+		endpoints = []string{"https://xrplcluster.com", "https://s2.ripple.com:51234"}
+	}
+	if networkHealthRetries <= 0 {
+		networkHealthRetries = 2
+	}
 	fetcher := &Fetcher{
 		client:               client,
 		logger:               logger,
@@ -127,6 +160,8 @@ func NewFetcher(client rippled.RippledClient, refreshInterval time.Duration, geo
 		validatorListSites:   sites,
 		secondaryRegistryURL: secondaryRegistryURL,
 		metadataCachePath:    metadataCachePath,
+		networkHealthRPCURLs: endpoints,
+		networkHealthRetries: networkHealthRetries,
 		network:              strings.ToLower(network),
 		validatorListCache:   make(map[string]*validatorListCacheEntry),
 		sourceCooldownUntil:  make(map[string]time.Time),
@@ -165,19 +200,6 @@ func (f *Fetcher) Start(ctx context.Context) {
 // Stop stops the periodic fetching
 func (f *Fetcher) Stop() {
 	close(f.stopChan)
-}
-
-// SetClient updates the rippled client used for validator/health RPC calls.
-func (f *Fetcher) SetClient(client rippled.RippledClient) {
-	f.clientMu.Lock()
-	f.client = client
-	f.clientMu.Unlock()
-}
-
-func (f *Fetcher) getClient() rippled.RippledClient {
-	f.clientMu.RLock()
-	defer f.clientMu.RUnlock()
-	return f.client
 }
 
 // Fetch retrieves current validators from rippled
@@ -324,12 +346,90 @@ func (f *Fetcher) GetLastUpdate() time.Time {
 
 // GetServerStatus retrieves current rippled server health information.
 func (f *Fetcher) GetServerStatus(ctx context.Context) (*models.ServerStatus, error) {
-	client := f.getClient()
-	result, err := client.GetServerInfo(ctx)
+	var endpointErrors []string
+	for _, endpoint := range f.networkHealthRPCURLs {
+		status, err := f.getServerStatusFromEndpoint(ctx, endpoint)
+		if err == nil {
+			return status, nil
+		}
+		endpointErrors = append(endpointErrors, fmt.Sprintf("%s: %v", endpoint, err))
+	}
+
+	if len(endpointErrors) > 0 {
+		return nil, fmt.Errorf("all network health endpoints failed: %s", strings.Join(endpointErrors, " | "))
+	}
+
+	result, err := f.client.GetServerInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return parseServerStatusResult(result)
+}
+
+func (f *Fetcher) getServerStatusFromEndpoint(ctx context.Context, endpoint string) (*models.ServerStatus, error) {
+	var lastErr error
+	for attempt := 1; attempt <= f.networkHealthRetries; attempt++ {
+		result, err := f.fetchServerInfoFromJSONRPC(ctx, endpoint)
+		if err == nil {
+			status, parseErr := parseServerStatusResult(result)
+			if parseErr == nil {
+				return status, nil
+			}
+			err = parseErr
+		}
+		lastErr = err
+		if attempt == f.networkHealthRetries {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt) * 150 * time.Millisecond):
+		}
+	}
+	return nil, lastErr
+}
+
+func (f *Fetcher) fetchServerInfoFromJSONRPC(ctx context.Context, endpoint string) (map[string]interface{}, error) {
+	requestPayload := map[string]interface{}{
+		"method":  "server_info",
+		"params":  []interface{}{map[string]interface{}{}},
+		"id":      1,
+		"jsonrpc": "2.0",
+	}
+	body, err := json.Marshal(requestPayload)
 	if err != nil {
 		return nil, err
 	}
 
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := f.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 120))
+		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+
+	var parsed map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+		return nil, err
+	}
+	if errorResult, ok := parsed["error"]; ok {
+		return nil, fmt.Errorf("JSON-RPC error: %v", errorResult)
+	}
+	return parsed, nil
+}
+
+func parseServerStatusResult(result interface{}) (*models.ServerStatus, error) {
 	resultMap, ok := result.(map[string]interface{})
 	if !ok {
 		return nil, fmt.Errorf("unexpected server_info response format")
@@ -343,7 +443,7 @@ func (f *Fetcher) GetServerStatus(ctx context.Context) (*models.ServerStatus, er
 		return nil, fmt.Errorf("missing server_info info payload")
 	}
 
-	status := &models.ServerStatus{
+	return &models.ServerStatus{
 		Connected:       true,
 		ServerState:     getString(info, "server_state"),
 		LedgerIndex:     uint32(getInt64(getMap(info, "validated_ledger"), "seq")),
@@ -352,9 +452,7 @@ func (f *Fetcher) GetServerStatus(ctx context.Context) (*models.ServerStatus, er
 		CompleteLedgers: getString(info, "complete_ledgers"),
 		Uptime:          getInt64(info, "uptime"),
 		LastSync:        time.Now().Unix(),
-	}
-
-	return status, nil
+	}, nil
 }
 
 func getMap(parent map[string]interface{}, key string) map[string]interface{} {
@@ -513,8 +611,7 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 }
 
 func (f *Fetcher) fetchTrustedValidatorsFromRippled(ctx context.Context) ([]*models.Validator, map[string]struct{}, error) {
-	client := f.getClient()
-	resp, err := client.Command(ctx, "validators", map[string]interface{}{})
+	resp, err := f.client.Command(ctx, "validators", map[string]interface{}{})
 	if err != nil {
 		return nil, nil, err
 	}

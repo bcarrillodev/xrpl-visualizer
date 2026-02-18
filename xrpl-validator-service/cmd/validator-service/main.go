@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/brandon/xrpl-validator-service/internal/config"
+	"github.com/brandon/xrpl-validator-service/internal/geolocation"
 	"github.com/brandon/xrpl-validator-service/internal/metrics"
 	"github.com/brandon/xrpl-validator-service/internal/rippled"
 	"github.com/brandon/xrpl-validator-service/internal/server"
@@ -37,47 +37,70 @@ func main() {
 	logger.SetLevel(logLevel)
 
 	logger.WithFields(logrus.Fields{
-		"source_mode":      cfg.SourceMode,
-		"local_json_rpc":   cfg.RippledJSONRPCURL,
-		"local_websocket":  cfg.RippledWebSocketURL,
-		"public_json_rpc":  cfg.PublicRippledJSONRPCURL,
-		"public_websocket": cfg.PublicRippledWebSocketURL,
-		"network":          cfg.Network,
-		"listen_addr":      cfg.ListenAddr,
-		"listen_port":      cfg.ListenPort,
+		"validator_json_rpc":  cfg.PublicRippledJSONRPCURL,
+		"validator_websocket": cfg.PublicRippledWebSocketURL,
+		"tx_json_rpc":         cfg.TransactionJSONRPCURL,
+		"tx_websocket":        cfg.TransactionWebSocketURL,
+		"tx_buffer_size":      cfg.TransactionBufferSize,
+		"geo_enrichment_q":    cfg.GeoEnrichmentQSize,
+		"geo_enrichment_w":    cfg.GeoEnrichmentWorkers,
+		"max_geo_candidates":  cfg.MaxGeoCandidates,
+		"broadcast_buffer":    cfg.BroadcastBufferSize,
+		"ws_client_buffer":    cfg.WSClientBufferSize,
+		"geolite_db_path":     cfg.GeoLiteDBPath,
+		"network":             cfg.Network,
+		"listen_addr":         cfg.ListenAddr,
+		"listen_port":         cfg.ListenPort,
 	}).Info("XRPL Validator Service starting")
 
-	localClient := rippled.NewClient(cfg.RippledJSONRPCURL, cfg.RippledWebSocketURL, logger)
-	publicClient := rippled.NewClient(cfg.PublicRippledJSONRPCURL, cfg.PublicRippledWebSocketURL, logger)
-	validatorClient, txClient := selectClients(cfg, localClient, publicClient, logger)
+	validatorClient := rippled.NewClient(cfg.PublicRippledJSONRPCURL, cfg.PublicRippledWebSocketURL, logger)
+	txClient := rippled.NewClient(cfg.TransactionJSONRPCURL, cfg.TransactionWebSocketURL, logger)
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 
-	// Create geolocation provider (try real, fallback to demo)
-	geoProvider := validator.NewRealGeoLocationProvider(logger, validator.RealGeoLocationConfig{
-		CachePath:         cfg.GeoCachePath,
-		MinLookupInterval: time.Duration(cfg.GeoLookupMinIntervalMS) * time.Millisecond,
-		RateLimitCooldown: time.Duration(cfg.GeoRateLimitCooldownSeconds) * time.Second,
+	geoResolver, err := geolocation.NewResolver(logger, geolocation.ResolverConfig{
+		CachePath:          cfg.GeoCachePath,
+		GeoLiteDBPath:      cfg.GeoLiteDBPath,
+		GeoLiteDownloadURL: cfg.GeoLiteDownloadURL,
+		AutoDownload:       cfg.GeoLiteAutoDownload,
 	})
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to initialize GeoLite resolver")
+	}
+	defer func() {
+		if err := geoResolver.Close(); err != nil {
+			logger.WithError(err).Warn("Error closing GeoLite resolver")
+		}
+	}()
 
 	// Create validator fetcher
 	validatorFetcher := validator.NewFetcher(
 		validatorClient,
 		time.Duration(cfg.ValidatorRefreshInterval)*time.Second,
-		geoProvider,
+		geoResolver,
 		cfg.ValidatorListSites,
 		cfg.SecondaryValidatorRegistryURL,
 		cfg.ValidatorMetadataCachePath,
+		cfg.NetworkHealthJSONRPCURLs,
+		cfg.NetworkHealthRetries,
 		cfg.Network,
 		logger,
 	)
 	validatorFetcher.Start(appCtx)
-	if cfg.SourceMode == "hybrid" {
-		startHybridValidatorSourceMonitor(appCtx, validatorFetcher, localClient, publicClient, logger)
-	}
 
 	// Create transaction listener
-	transactionListener := transaction.NewListener(txClient, cfg.MinPaymentDrops, logger)
+	transactionListener := transaction.NewListener(
+		txClient,
+		cfg.MinPaymentDrops,
+		geoResolver,
+		logger,
+		transaction.ListenerOptions{
+			TransactionBufferSize: cfg.TransactionBufferSize,
+			GeoEnrichmentQSize:    cfg.GeoEnrichmentQSize,
+			GeoWorkerCount:        cfg.GeoEnrichmentWorkers,
+			MaxGeoCandidates:      cfg.MaxGeoCandidates,
+		},
+	)
 	if err := transactionListener.Start(appCtx); err != nil {
 		metrics.ValidatorFetchTotal.WithLabelValues("error").Inc() // Note: reusing for listener start
 		logger.WithError(err).Error("Failed to start transaction listener")
@@ -90,6 +113,8 @@ func main() {
 		cfg.ListenAddr,
 		cfg.ListenPort,
 		cfg.CORSAllowedOrigins,
+		cfg.BroadcastBufferSize,
+		cfg.WSClientBufferSize,
 		logger,
 	)
 
@@ -127,124 +152,12 @@ func main() {
 	}
 
 	// Close rippled clients
-	if err := localClient.Close(); err != nil {
-		logger.WithError(err).Error("Error closing local rippled client")
+	if err := validatorClient.Close(); err != nil {
+		logger.WithError(err).Error("Error closing validator source client")
 	}
-	if publicClient != localClient {
-		if err := publicClient.Close(); err != nil {
-			logger.WithError(err).Error("Error closing public rippled client")
-		}
+	if err := txClient.Close(); err != nil {
+		logger.WithError(err).Error("Error closing transaction source client")
 	}
 
 	logger.Info("Service shutdown complete")
-}
-
-func selectClients(cfg *config.Config, localClient, publicClient rippled.RippledClient, logger *logrus.Logger) (rippled.RippledClient, rippled.RippledClient) {
-	switch cfg.SourceMode {
-	case "local":
-		logger.Info("Using local rippled for validators and transactions")
-		return localClient, localClient
-	case "public":
-		logger.Info("Using public rippled for validators and transactions")
-		return publicClient, publicClient
-	case "hybrid":
-		validatorClient := publicClient
-		txClient := publicClient
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		ready, reason := isLocalReady(ctx, localClient)
-		cancel()
-		if ready {
-			validatorClient = localClient
-			logger.Info("Using hybrid mode: local ready for validators/health; public for transactions")
-		} else {
-			logger.WithField("reason", reason).Info("Using hybrid mode: public transactions and validators until local rippled is ready")
-		}
-		return validatorClient, txClient
-	default:
-		logger.Warn("Unknown source mode; defaulting to hybrid")
-		return publicClient, publicClient
-	}
-}
-
-func startHybridValidatorSourceMonitor(ctx context.Context, fetcher *validator.Fetcher, localClient, publicClient rippled.RippledClient, logger *logrus.Logger) {
-	ticker := time.NewTicker(30 * time.Second)
-
-	go func() {
-		defer ticker.Stop()
-
-		current := "public"
-		timeoutCtx, timeoutCancel := context.WithTimeout(ctx, 5*time.Second)
-		if ready, _ := isLocalReady(timeoutCtx, localClient); ready {
-			current = "local"
-		}
-		timeoutCancel()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				checkCtx, checkCancel := context.WithTimeout(ctx, 5*time.Second)
-				ready, reason := isLocalReady(checkCtx, localClient)
-				checkCancel()
-
-				next := "public"
-				if ready {
-					next = "local"
-				}
-				if next == current {
-					continue
-				}
-
-				if next == "local" {
-					fetcher.SetClient(localClient)
-					logger.Info("Hybrid mode switched validator/health source to local rippled")
-				} else {
-					fetcher.SetClient(publicClient)
-					logger.WithField("reason", reason).Warn("Hybrid mode switched validator/health source to public rippled")
-				}
-				current = next
-
-				refreshCtx, refreshCancel := context.WithTimeout(ctx, 20*time.Second)
-				if err := fetcher.Fetch(refreshCtx); err != nil {
-					logger.WithError(err).Warn("Hybrid source switch refresh failed")
-				}
-				refreshCancel()
-			}
-		}
-	}()
-}
-
-func isLocalReady(ctx context.Context, client rippled.RippledClient) (bool, string) {
-	result, err := client.GetServerInfo(ctx)
-	if err != nil {
-		return false, err.Error()
-	}
-
-	resultMap, ok := result.(map[string]interface{})
-	if !ok {
-		return false, "unexpected server_info format"
-	}
-	payload, ok := resultMap["result"].(map[string]interface{})
-	if !ok {
-		return false, "missing result payload"
-	}
-	info, ok := payload["info"].(map[string]interface{})
-	if !ok {
-		return false, "missing info payload"
-	}
-
-	serverState, _ := info["server_state"].(string)
-	completeLedgers, _ := info["complete_ledgers"].(string)
-	if strings.TrimSpace(completeLedgers) == "" {
-		return false, "complete_ledgers empty"
-	}
-
-	switch strings.ToLower(serverState) {
-	case "full", "proposing", "validating":
-		return true, ""
-	default:
-		return false, fmt.Sprintf("server_state=%s", serverState)
-	}
 }

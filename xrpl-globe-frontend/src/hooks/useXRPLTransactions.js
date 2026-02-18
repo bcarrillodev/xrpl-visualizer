@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 
-const MAX_TRANSACTIONS = 100; // Keep last 100 for visual trails
+const MAX_TRANSACTIONS = 1000; // Keep last 1000 for visual trails
 
-export function useXRPLTransactions(url) {
+export function useXRPLTransactions(url, healthUrl = 'http://localhost:8080/health') {
   const [transactions, setTransactions] = useState([]);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionError, setConnectionError] = useState(null);
@@ -15,7 +15,7 @@ export function useXRPLTransactions(url) {
     let isUnmounted = false;
 
     function checkBackendReady() {
-      return fetch('http://localhost:8080/health')
+      return fetch(healthUrl)
         .then(res => res.ok)
         .catch(() => false);
     }
@@ -39,7 +39,13 @@ export function useXRPLTransactions(url) {
             const tx = JSON.parse(event.data);
             const sourceGeo = tx.source_info || tx.sourceInfo;
             const destGeo = tx.dest_info || tx.destInfo;
-            const hasArcGeo = Boolean(sourceGeo && destGeo);
+            const extraGeo = tx.extra_info || tx.extraInfo;
+            const hasSourceGeo = Number.isFinite(sourceGeo?.latitude) && Number.isFinite(sourceGeo?.longitude);
+            const hasDestGeo = Number.isFinite(destGeo?.latitude) && Number.isFinite(destGeo?.longitude);
+            const hasArcGeo = hasSourceGeo && hasDestGeo;
+            const extraGeoPoints = Array.isArray(extraGeo)
+              ? extraGeo.filter((point) => Number.isFinite(point?.latitude) && Number.isFinite(point?.longitude))
+              : [];
             const amountXRP = formatDropsToXRP(tx.amount);
 
             if (amountXRP == null) {
@@ -57,6 +63,7 @@ export function useXRPLTransactions(url) {
                 startLng: sourceGeo?.longitude,
                 endLat: destGeo?.latitude,
                 endLng: destGeo?.longitude,
+                extraGeoPoints,
                 amountDrops: tx.amount,
                 amountXRP,
                 stroke: getAmountStroke(amountXRP),
@@ -118,7 +125,7 @@ export function useXRPLTransactions(url) {
       }
       if (ws.current) ws.current.close();
     };
-  }, [url]);
+  }, [url, healthUrl]);
 
   return { transactions, isConnected, connectionError };
 }

@@ -9,17 +9,15 @@ import (
 )
 
 type Config struct {
-	// Source Selection
-	SourceMode string // local | public | hybrid
-	Network    string
-
-	// Local Rippled Configuration
-	RippledJSONRPCURL   string
-	RippledWebSocketURL string
-
-	// Public Rippled Configuration
+	// External XRPL source configuration
 	PublicRippledJSONRPCURL   string
 	PublicRippledWebSocketURL string
+
+	// Transaction Stream Source (external by default)
+	TransactionJSONRPCURL   string
+	TransactionWebSocketURL string
+
+	Network string
 
 	// Server Configuration
 	ListenPort         int
@@ -31,12 +29,21 @@ type Config struct {
 	ValidatorListSites            []string
 	SecondaryValidatorRegistryURL string
 	ValidatorMetadataCachePath    string
+	NetworkHealthJSONRPCURLs      []string
+	NetworkHealthRetries          int
 	GeoCachePath                  string
-	GeoLookupMinIntervalMS        int
-	GeoRateLimitCooldownSeconds   int
+	GeoLiteDBPath                 string
+	GeoLiteDownloadURL            string
+	GeoLiteAutoDownload           bool
 
 	// Transaction Configuration
-	MinPaymentDrops int64
+	MinPaymentDrops       int64
+	TransactionBufferSize int
+	GeoEnrichmentQSize    int
+	GeoEnrichmentWorkers  int
+	MaxGeoCandidates      int
+	BroadcastBufferSize   int
+	WSClientBufferSize    int
 
 	// Logging Configuration
 	LogLevel string
@@ -46,12 +53,14 @@ type Config struct {
 func NewConfig() *Config {
 	corsOrigins := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173")
 	validatorListSites := getEnv("VALIDATOR_LIST_SITES", "https://vl.ripple.com,https://unl.xrplf.org")
+	publicJSONRPCURL := getEnv("PUBLIC_RIPPLED_JSON_RPC_URL", "https://xrplcluster.com")
+	publicWebSocketURL := getEnv("PUBLIC_RIPPLED_WEBSOCKET_URL", "wss://xrplcluster.com")
+	networkHealthJSONRPCURLs := getEnv("NETWORK_HEALTH_JSON_RPC_URLS", publicJSONRPCURL+",https://s2.ripple.com:51234")
 	cfg := &Config{
-		SourceMode:                    strings.ToLower(getEnv("XRPL_SOURCE_MODE", "hybrid")),
-		RippledJSONRPCURL:             getEnv("RIPPLED_JSON_RPC_URL", "http://localhost:5005"),
-		RippledWebSocketURL:           getEnv("RIPPLED_WEBSOCKET_URL", "ws://localhost:6006"),
-		PublicRippledJSONRPCURL:       getEnv("PUBLIC_RIPPLED_JSON_RPC_URL", "https://xrplcluster.com"),
-		PublicRippledWebSocketURL:     getEnv("PUBLIC_RIPPLED_WEBSOCKET_URL", "wss://xrplcluster.com"),
+		PublicRippledJSONRPCURL:       publicJSONRPCURL,
+		PublicRippledWebSocketURL:     publicWebSocketURL,
+		TransactionJSONRPCURL:         getEnv("TRANSACTION_JSON_RPC_URL", publicJSONRPCURL),
+		TransactionWebSocketURL:       getEnv("TRANSACTION_WEBSOCKET_URL", publicWebSocketURL),
 		Network:                       strings.ToLower(getEnv("XRPL_NETWORK", "mainnet")),
 		ListenPort:                    getEnvInt("LISTEN_PORT", 8080),
 		ListenAddr:                    getEnv("LISTEN_ADDR", "0.0.0.0"),
@@ -60,10 +69,19 @@ func NewConfig() *Config {
 		ValidatorListSites:            splitCSV(validatorListSites),
 		SecondaryValidatorRegistryURL: getEnv("SECONDARY_VALIDATOR_REGISTRY_URL", "https://api.xrpscan.com/api/v1/validatorregistry"),
 		ValidatorMetadataCachePath:    getEnv("VALIDATOR_METADATA_CACHE_PATH", "data/validator-metadata-cache.json"),
+		NetworkHealthJSONRPCURLs:      splitCSVPreserveOrder(networkHealthJSONRPCURLs),
+		NetworkHealthRetries:          getEnvInt("NETWORK_HEALTH_RETRIES", 2),
 		GeoCachePath:                  getEnv("GEO_CACHE_PATH", "data/geolocation-cache.json"),
-		GeoLookupMinIntervalMS:        getEnvInt("GEO_LOOKUP_MIN_INTERVAL_MS", 1200),
-		GeoRateLimitCooldownSeconds:   getEnvInt("GEO_RATE_LIMIT_COOLDOWN_SECONDS", 900),
-		MinPaymentDrops:               getEnvInt64("MIN_PAYMENT_DROPS", 10000000000), // 10,000 XRP
+		GeoLiteDBPath:                 getEnv("GEOLITE_DB_PATH", "data/GeoLite2-City.mmdb"),
+		GeoLiteDownloadURL:            getEnv("GEOLITE_DOWNLOAD_URL", "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb"),
+		GeoLiteAutoDownload:           getEnvBool("GEOLITE_AUTO_DOWNLOAD", true),
+		MinPaymentDrops:               getEnvInt64("MIN_PAYMENT_DROPS", 1000000), // 1 XRP
+		TransactionBufferSize:         getEnvInt("TRANSACTION_BUFFER_SIZE", 2048),
+		GeoEnrichmentQSize:            getEnvInt("GEO_ENRICHMENT_QUEUE_SIZE", 2048),
+		GeoEnrichmentWorkers:          getEnvInt("GEO_ENRICHMENT_WORKERS", 8),
+		MaxGeoCandidates:              getEnvInt("MAX_GEO_CANDIDATES", 6),
+		BroadcastBufferSize:           getEnvInt("BROADCAST_BUFFER_SIZE", 2048),
+		WSClientBufferSize:            getEnvInt("WS_CLIENT_BUFFER_SIZE", 512),
 		LogLevel:                      getEnv("LOG_LEVEL", "info"),
 	}
 	return cfg
@@ -94,6 +112,16 @@ func getEnvInt64(key string, defaultVal int64) int64 {
 	return defaultVal
 }
 
+func getEnvBool(key string, defaultVal bool) bool {
+	if value, exists := os.LookupEnv(key); exists {
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err == nil {
+			return parsed
+		}
+	}
+	return defaultVal
+}
+
 func splitCSV(value string) []string {
 	parts := strings.Split(value, ",")
 	out := make([]string, 0, len(parts))
@@ -107,6 +135,24 @@ func splitCSV(value string) []string {
 	return out
 }
 
+func splitCSVPreserveOrder(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
 // Validate checks the configuration for validity
 func (c *Config) Validate() error {
 	if c.ListenPort <= 0 || c.ListenPort > 65535 {
@@ -115,22 +161,17 @@ func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
 		return fmt.Errorf("listen address cannot be empty")
 	}
-	if c.RippledJSONRPCURL == "" {
-		return fmt.Errorf("rippled JSON RPC URL cannot be empty")
-	}
-	if c.RippledWebSocketURL == "" {
-		return fmt.Errorf("rippled WebSocket URL cannot be empty")
-	}
 	if c.PublicRippledJSONRPCURL == "" {
 		return fmt.Errorf("public rippled JSON RPC URL cannot be empty")
 	}
 	if c.PublicRippledWebSocketURL == "" {
 		return fmt.Errorf("public rippled WebSocket URL cannot be empty")
 	}
-	switch c.SourceMode {
-	case "local", "public", "hybrid":
-	default:
-		return fmt.Errorf("invalid source mode: %s", c.SourceMode)
+	if c.TransactionJSONRPCURL == "" {
+		return fmt.Errorf("transaction JSON RPC URL cannot be empty")
+	}
+	if c.TransactionWebSocketURL == "" {
+		return fmt.Errorf("transaction WebSocket URL cannot be empty")
 	}
 	if c.Network == "" {
 		return fmt.Errorf("network cannot be empty")
@@ -147,17 +188,41 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.ValidatorMetadataCachePath) == "" {
 		return fmt.Errorf("validator metadata cache path cannot be empty")
 	}
+	if len(c.NetworkHealthJSONRPCURLs) == 0 {
+		return fmt.Errorf("at least one network health JSON RPC URL must be specified")
+	}
+	if c.NetworkHealthRetries <= 0 {
+		return fmt.Errorf("network health retries must be positive: %d", c.NetworkHealthRetries)
+	}
 	if strings.TrimSpace(c.GeoCachePath) == "" {
 		return fmt.Errorf("geo cache path cannot be empty")
 	}
-	if c.GeoLookupMinIntervalMS <= 0 {
-		return fmt.Errorf("geo lookup min interval must be positive: %d", c.GeoLookupMinIntervalMS)
+	if strings.TrimSpace(c.GeoLiteDBPath) == "" {
+		return fmt.Errorf("GeoLite DB path cannot be empty")
 	}
-	if c.GeoRateLimitCooldownSeconds <= 0 {
-		return fmt.Errorf("geo rate limit cooldown must be positive: %d", c.GeoRateLimitCooldownSeconds)
+	if c.GeoLiteAutoDownload && strings.TrimSpace(c.GeoLiteDownloadURL) == "" {
+		return fmt.Errorf("GeoLite download URL cannot be empty when auto-download is enabled")
 	}
 	if c.MinPaymentDrops <= 0 {
 		return fmt.Errorf("minimum payment drops must be positive: %d", c.MinPaymentDrops)
+	}
+	if c.TransactionBufferSize <= 0 {
+		return fmt.Errorf("transaction buffer size must be positive: %d", c.TransactionBufferSize)
+	}
+	if c.GeoEnrichmentQSize <= 0 {
+		return fmt.Errorf("geo enrichment queue size must be positive: %d", c.GeoEnrichmentQSize)
+	}
+	if c.GeoEnrichmentWorkers <= 0 {
+		return fmt.Errorf("geo enrichment workers must be positive: %d", c.GeoEnrichmentWorkers)
+	}
+	if c.MaxGeoCandidates <= 0 {
+		return fmt.Errorf("max geo candidates must be positive: %d", c.MaxGeoCandidates)
+	}
+	if c.BroadcastBufferSize <= 0 {
+		return fmt.Errorf("broadcast buffer size must be positive: %d", c.BroadcastBufferSize)
+	}
+	if c.WSClientBufferSize <= 0 {
+		return fmt.Errorf("websocket client buffer size must be positive: %d", c.WSClientBufferSize)
 	}
 	if len(c.CORSAllowedOrigins) == 0 {
 		return fmt.Errorf("at least one CORS allowed origin must be specified")

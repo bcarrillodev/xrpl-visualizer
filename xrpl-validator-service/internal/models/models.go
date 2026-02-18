@@ -45,9 +45,11 @@ type Transaction struct {
 	CloseTime uint32 `json:"close_time"` // Ledger close time
 
 	// Metadata
-	Validated  bool         `json:"validated"`
-	SourceInfo *GeoLocation `json:"source_info,omitempty"` // Enriched with Source validator location
-	DestInfo   *GeoLocation `json:"dest_info,omitempty"`   // Enriched with Dest validator location
+	Validated     bool           `json:"validated"`
+	SourceInfo    *GeoLocation   `json:"source_info,omitempty"` // Enriched source account location
+	DestInfo      *GeoLocation   `json:"dest_info,omitempty"`   // Enriched destination account location
+	ExtraInfo     []*GeoLocation `json:"extra_info,omitempty"`  // Additional mapped account endpoints (e.g. issuers)
+	GeoCandidates []string       `json:"-"`                     // Internal candidate accounts for enrichment
 }
 
 // GeoLocation represents geographic location data

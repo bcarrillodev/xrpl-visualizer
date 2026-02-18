@@ -4,10 +4,10 @@ A Go service that fetches verified validators from the XRP Ledger mainnet and st
 
 ## Features
 
-- ✅ Fetches validator data from rippled server
+- ✅ Fetches validator data from external XRPL endpoints
 - ✅ Periodic validator caching with configurable refresh intervals
 - ✅ Real-time transaction streaming via WebSocket
-- ✅ Geolocation enrichment support (stub provided)
+- ✅ GeoLite2 (MMDB) geolocation enrichment for validators and transaction accounts
 - ✅ REST API for validator queries
 - ✅ Graceful error handling and reconnection logic
 - ✅ Docker support for containerized deployment
@@ -15,7 +15,7 @@ A Go service that fetches verified validators from the XRP Ledger mainnet and st
 ## Prerequisites
 
 - Go 1.21+
-- Running rippled server (Docker container recommended, required only for `local`/`hybrid` validator path)
+- Internet access to external XRPL endpoints
 - Docker (optional, for containerized deployment)
 
 ## Installation
@@ -59,14 +59,11 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
-    depends_on:
-      - rippled
     environment:
-      XRPL_SOURCE_MODE: hybrid
-      RIPPLED_JSON_RPC_URL: http://rippled:5005
-      RIPPLED_WEBSOCKET_URL: ws://rippled:6006
       PUBLIC_RIPPLED_JSON_RPC_URL: https://xrplcluster.com
       PUBLIC_RIPPLED_WEBSOCKET_URL: wss://xrplcluster.com
+      TRANSACTION_JSON_RPC_URL: https://xrplcluster.com
+      TRANSACTION_WEBSOCKET_URL: wss://xrplcluster.com
       XRPL_NETWORK: mainnet
       LISTEN_PORT: 8080
       LISTEN_ADDR: 0.0.0.0
@@ -74,10 +71,19 @@ services:
       VALIDATOR_LIST_SITES: https://vl.ripple.com,https://unl.xrplf.org
       SECONDARY_VALIDATOR_REGISTRY_URL: https://api.xrpscan.com/api/v1/validatorregistry
       VALIDATOR_METADATA_CACHE_PATH: data/validator-metadata-cache.json
+      NETWORK_HEALTH_JSON_RPC_URLS: https://xrplcluster.com,https://s2.ripple.com:51234
+      NETWORK_HEALTH_RETRIES: 2
       GEO_CACHE_PATH: data/geolocation-cache.json
-      GEO_LOOKUP_MIN_INTERVAL_MS: 1200
-      GEO_RATE_LIMIT_COOLDOWN_SECONDS: 900
-      MIN_PAYMENT_DROPS: 10000000000
+      GEOLITE_DB_PATH: data/GeoLite2-City.mmdb
+      GEOLITE_DOWNLOAD_URL: https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
+      GEOLITE_AUTO_DOWNLOAD: "true"
+      MIN_PAYMENT_DROPS: 1000000
+      TRANSACTION_BUFFER_SIZE: 2048
+      GEO_ENRICHMENT_QUEUE_SIZE: 2048
+      GEO_ENRICHMENT_WORKERS: 8
+      MAX_GEO_CANDIDATES: 6
+      BROADCAST_BUFFER_SIZE: 2048
+      WS_CLIENT_BUFFER_SIZE: 512
       LOG_LEVEL: info
     container_name: xrpl-validator-service
     restart: unless-stopped
@@ -94,11 +100,10 @@ Configure via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `XRPL_SOURCE_MODE` | `hybrid` | Source selection: `local`, `public`, or `hybrid` |
-| `RIPPLED_JSON_RPC_URL` | `http://localhost:5005` | rippled JSON-RPC endpoint URL |
-| `RIPPLED_WEBSOCKET_URL` | `ws://localhost:6006` | rippled WebSocket endpoint URL |
-| `PUBLIC_RIPPLED_JSON_RPC_URL` | `https://xrplcluster.com` | Public JSON-RPC endpoint used in `public`/`hybrid` modes |
-| `PUBLIC_RIPPLED_WEBSOCKET_URL` | `wss://xrplcluster.com` | Public WebSocket endpoint used in `public`/`hybrid` modes |
+| `PUBLIC_RIPPLED_JSON_RPC_URL` | `https://xrplcluster.com` | External JSON-RPC endpoint used for validator/health fetches |
+| `PUBLIC_RIPPLED_WEBSOCKET_URL` | `wss://xrplcluster.com` | External WebSocket endpoint paired with validator source |
+| `TRANSACTION_JSON_RPC_URL` | `https://xrplcluster.com` | External JSON-RPC endpoint used for transaction account/domain lookups |
+| `TRANSACTION_WEBSOCKET_URL` | `wss://xrplcluster.com` | External WebSocket endpoint used for live transaction stream subscription |
 | `XRPL_NETWORK` | `mainnet` | Network label returned with validator data |
 | `LISTEN_ADDR` | `0.0.0.0` | HTTP server listen address |
 | `LISTEN_PORT` | `8080` | HTTP server listen port |
@@ -106,17 +111,20 @@ Configure via environment variables:
 | `VALIDATOR_LIST_SITES` | `https://vl.ripple.com,https://unl.xrplf.org` | Comma-separated validator list source URLs |
 | `SECONDARY_VALIDATOR_REGISTRY_URL` | `https://api.xrpscan.com/api/v1/validatorregistry` | Secondary validator metadata source for domain enrichment |
 | `VALIDATOR_METADATA_CACHE_PATH` | `data/validator-metadata-cache.json` | Persistent validator metadata cache keyed by validator key/address |
+| `NETWORK_HEALTH_JSON_RPC_URLS` | `https://xrplcluster.com,https://s2.ripple.com:51234` | Ordered JSON-RPC fallback endpoints for `/network-health` |
+| `NETWORK_HEALTH_RETRIES` | `2` | Retry attempts per health endpoint before trying next fallback |
 | `GEO_CACHE_PATH` | `data/geolocation-cache.json` | Persistent geolocation cache path (survives process restarts) |
-| `GEO_LOOKUP_MIN_INTERVAL_MS` | `1200` | Minimum delay between outbound geolocation lookups |
-| `GEO_RATE_LIMIT_COOLDOWN_SECONDS` | `900` | Cooldown window after a geolocation provider `429` |
-| `MIN_PAYMENT_DROPS` | `10000000000` | Minimum streamed payment amount in drops (10,000 XRP) |
+| `GEOLITE_DB_PATH` | `data/GeoLite2-City.mmdb` | Local path to GeoLite2 City MMDB file |
+| `GEOLITE_DOWNLOAD_URL` | `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb` | Download URL used when `GEOLITE_AUTO_DOWNLOAD=true` and DB file is missing |
+| `GEOLITE_AUTO_DOWNLOAD` | `true` | Auto-download GeoLite DB at startup when missing |
+| `MIN_PAYMENT_DROPS` | `1000000` | Minimum streamed payment amount in drops (1 XRP) |
+| `TRANSACTION_BUFFER_SIZE` | `2048` | Internal listener queue for parsed transactions awaiting callback dispatch |
+| `GEO_ENRICHMENT_QUEUE_SIZE` | `2048` | Queue for asynchronous geolocation enrichment jobs |
+| `GEO_ENRICHMENT_WORKERS` | `8` | Number of concurrent workers resolving account geolocation |
+| `MAX_GEO_CANDIDATES` | `6` | Max account candidates enriched per transaction (source/destination prioritized) |
+| `BROADCAST_BUFFER_SIZE` | `2048` | Internal broadcast queue size before WebSocket fanout |
+| `WS_CLIENT_BUFFER_SIZE` | `512` | Per-WebSocket-client pending transaction buffer size |
 | `LOG_LEVEL` | `info` | Log level (debug, info, warn, error) |
-
-### Source Modes
-
-- `local`: validators + transactions use local rippled only.
-- `public`: validators + transactions use public endpoints only.
-- `hybrid` (default): transactions use public endpoint immediately; validators/health prefer local rippled when reachable, otherwise fallback to public.
 
 ## API Endpoints
 
@@ -178,7 +186,7 @@ Response:
 
 **GET /transactions** (WebSocket upgrade)
 
-Establishes a WebSocket connection for streaming validated XRP `Payment` transactions where amount is at least `MIN_PAYMENT_DROPS` (default `10,000 XRP`).
+Establishes a WebSocket connection for streaming validated XRP `Payment` transactions where amount is at least `MIN_PAYMENT_DROPS` (default `1 XRP`).
 
 ```javascript
 // JavaScript example
@@ -195,6 +203,9 @@ ws.onmessage = (event) => {
   //   "transaction_type": "Payment",
   //   "source_info": { "latitude": 40.7128, "longitude": -74.0060, ... },
   //   "dest_info": { "latitude": 51.5074, "longitude": -0.1278, ... },
+  //   "extra_info": [
+  //     { "latitude": 35.6895, "longitude": 139.6917, "validator_address": "r..." }
+  //   ],
   //   ...
   // }
 };
@@ -225,7 +236,7 @@ ws.onclose = () => console.log('WebSocket closed');
 └─────────────────────────────────────────────┘
          │                    │
          ▼                    ▼
-    rippled Server      Frontend (Globe.GL)
+ External XRPL Endpoints  Frontend (Globe.GL)
 ```
 
 ## Project Structure
@@ -242,9 +253,10 @@ xrpl-validator-service/
 │   │   └── models.go         # Data models
 │   ├── rippled/
 │   │   └── client.go         # rippled client
+│   ├── geolocation/
+│   │   └── resolver.go       # GeoLite resolver + domain/IP/account cache
 │   ├── validator/
-│   │   ├── fetcher.go        # Validator fetching logic
-│   │   └── geolocation.go    # Geolocation provider
+│   │   └── fetcher.go        # Validator fetching logic
 │   ├── transaction/
 │   │   └── listener.go       # Transaction listener
 │   └── server/
@@ -274,19 +286,27 @@ go build ./cmd/validator-service
 ### Running with Custom Config
 
 ```bash
-RIPPLED_JSON_RPC_URL=http://localhost:5005 \
-RIPPLED_WEBSOCKET_URL=ws://localhost:6006 \
 PUBLIC_RIPPLED_JSON_RPC_URL=https://xrplcluster.com \
 PUBLIC_RIPPLED_WEBSOCKET_URL=wss://xrplcluster.com \
-XRPL_SOURCE_MODE=hybrid \
+TRANSACTION_JSON_RPC_URL=https://xrplcluster.com \
+TRANSACTION_WEBSOCKET_URL=wss://xrplcluster.com \
 XRPL_NETWORK=mainnet \
 VALIDATOR_LIST_SITES=https://vl.ripple.com,https://unl.xrplf.org \
 SECONDARY_VALIDATOR_REGISTRY_URL=https://api.xrpscan.com/api/v1/validatorregistry \
 VALIDATOR_METADATA_CACHE_PATH=data/validator-metadata-cache.json \
+NETWORK_HEALTH_JSON_RPC_URLS=https://xrplcluster.com,https://s2.ripple.com:51234 \
+NETWORK_HEALTH_RETRIES=2 \
 GEO_CACHE_PATH=data/geolocation-cache.json \
-GEO_LOOKUP_MIN_INTERVAL_MS=1200 \
-GEO_RATE_LIMIT_COOLDOWN_SECONDS=900 \
-MIN_PAYMENT_DROPS=10000000000 \
+GEOLITE_DB_PATH=data/GeoLite2-City.mmdb \
+GEOLITE_DOWNLOAD_URL=https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb \
+GEOLITE_AUTO_DOWNLOAD=true \
+MIN_PAYMENT_DROPS=1000000 \
+TRANSACTION_BUFFER_SIZE=2048 \
+GEO_ENRICHMENT_QUEUE_SIZE=2048 \
+GEO_ENRICHMENT_WORKERS=8 \
+MAX_GEO_CANDIDATES=6 \
+BROADCAST_BUFFER_SIZE=2048 \
+WS_CLIENT_BUFFER_SIZE=512 \
 LISTEN_PORT=9000 \
 LOG_LEVEL=debug \
 ./validator-service
@@ -297,27 +317,23 @@ LOG_LEVEL=debug \
 - [ ] Phase 8: Enhanced error handling and resilience (reconnection logic, circuit breakers)
 - [ ] Phase 10: Comprehensive unit tests
 - [ ] Phase 11: Frontend integration with Globe.GL
-- [ ] Real geolocation provider (GeoIP database integration)
 - [ ] Validator transaction filtering and analytics
 - [ ] Metrics and monitoring (Prometheus integration)
 - [ ] Performance optimization
 
 ## Troubleshooting
 
-### Connection refused to rippled
+### Connection refused to XRPL source
 
-- Ensure rippled is running on the configured host/port
-- Check `RIPPLED_JSON_RPC_URL` and `RIPPLED_WEBSOCKET_URL` environment variables
-- Verify network connectivity between service and rippled
-- If local rippled is still syncing, use `XRPL_SOURCE_MODE=hybrid` or `XRPL_SOURCE_MODE=public` to keep transaction flow live
+- Check `PUBLIC_RIPPLED_JSON_RPC_URL`, `PUBLIC_RIPPLED_WEBSOCKET_URL`, `TRANSACTION_JSON_RPC_URL`, and `TRANSACTION_WEBSOCKET_URL`
+- Verify outbound network connectivity from the service to external XRPL endpoints
+- Confirm endpoint health and that the URLs are reachable from your runtime environment
 
 ### No validators returned
 
-- Ensure rippled has fully synced
-- Check rippled logs for validation errors
 - Verify the service has fetched data (check logs)
 - Verify `VALIDATOR_LIST_SITES` and `SECONDARY_VALIDATOR_REGISTRY_URL` are reachable from the service
-- In `hybrid` mode, validator fetching will fallback to public if local server info is unavailable
+- Verify `PUBLIC_RIPPLED_JSON_RPC_URL` is reachable and serving `server_info`/`validators` requests
 
 ### WebSocket clients not receiving transactions
 
@@ -327,9 +343,9 @@ LOG_LEVEL=debug \
 
 ### Validators have no mapped coordinates
 
-- Check service logs for `geolocation API returned status 429` (provider rate limit)
+- Confirm the GeoLite MMDB exists at `GEOLITE_DB_PATH` (or that `GEOLITE_AUTO_DOWNLOAD` can fetch it)
 - Keep `GEO_CACHE_PATH` on persistent storage so previously mapped validators are reused after restart
-- Increase `GEO_LOOKUP_MIN_INTERVAL_MS` and/or `GEO_RATE_LIMIT_COOLDOWN_SECONDS` to reduce repeated rate-limit hits
+- Check that validator/account domains resolve to public IP addresses
 
 ## License
 

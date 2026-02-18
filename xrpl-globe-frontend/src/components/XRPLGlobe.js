@@ -10,20 +10,22 @@ const MODE = {
 const FAST_RETRY_MS = 10 * 1000;
 const VALIDATOR_REFRESH_MS = 5 * 60 * 1000;
 const VALIDATOR_CACHE_KEY = "xrpl_validators_cache_v1";
-const ACTIVITY_CELL_SIZE = 5; // degrees
+const ACTIVITY_CELL_SIZE = 1; // degrees
+const API_BASE_URL = (process.env.REACT_APP_API_BASE || "http://localhost:8080").replace(/\/+$/, "");
+const TRANSACTION_WS_URL = (process.env.REACT_APP_TX_WS_URL || `${API_BASE_URL.replace(/^http/i, "ws")}/transactions`).replace(/\/+$/, "");
 
 const XRPLGlobe = () => {
   const globeEl = useRef();
   const [mode, setMode] = useState(MODE.FLOW);
-  const [validators, setValidators] = useState([]);
   const [mappedValidators, setMappedValidators] = useState([]);
   const [fetchError, setFetchError] = useState(null);
-  const [minPaymentXRP, setMinPaymentXRP] = useState(10000);
+  const [minPaymentXRP, setMinPaymentXRP] = useState(1);
 
   const { transactions, isConnected, connectionError } = useXRPLTransactions(
-    "ws://localhost:8080/transactions",
+    TRANSACTION_WS_URL,
+    `${API_BASE_URL}/health`,
   );
-  const { networkHealth, networkHealthError } = useNetworkHealth();
+  const { networkHealth, networkHealthError } = useNetworkHealth(`${API_BASE_URL}/network-health`);
 
   useEffect(() => {
     let isMounted = true;
@@ -56,9 +58,9 @@ const XRPLGlobe = () => {
     const applyValidators = (allValidators) => {
       const all = Array.isArray(allValidators) ? allValidators : [];
       const mapped = all.filter((v) => v.latitude !== 0 || v.longitude !== 0);
-      setValidators(all);
       setMappedValidators(mapped);
-      writeValidatorCache(all);
+      writeValidatorCache(mapped);
+      return mapped.length;
     };
 
     const scheduleFetch = (delayMs) => {
@@ -66,7 +68,7 @@ const XRPLGlobe = () => {
     };
 
     const fetchValidators = () => {
-      fetch("http://localhost:8080/validators")
+      fetch(`${API_BASE_URL}/validators`)
         .then((res) => {
           if (res.status === 304) {
             return { validators: readValidatorCache() || [] };
@@ -78,9 +80,9 @@ const XRPLGlobe = () => {
         })
         .then((data) => {
           if (!isMounted) return;
-          applyValidators(data.validators || []);
+          const mappedCount = applyValidators(data.validators || []);
           setFetchError(null);
-          scheduleFetch((data.validators || []).length > 0 ? VALIDATOR_REFRESH_MS : FAST_RETRY_MS);
+          scheduleFetch(mappedCount > 0 ? VALIDATOR_REFRESH_MS : FAST_RETRY_MS);
         })
         .catch((err) => {
           if (!isMounted) return;
@@ -113,11 +115,11 @@ const XRPLGlobe = () => {
 
     const fetchHealth = async () => {
       try {
-        const res = await fetch("http://localhost:8080/health");
+        const res = await fetch(`${API_BASE_URL}/health`);
         if (!res.ok) return;
         const data = await res.json();
         if (!isMounted) return;
-        const drops = Number(data.min_payment_drops || 10000000000);
+        const drops = Number(data.min_payment_drops || 1000000);
         setMinPaymentXRP(drops / 1_000_000);
       } catch (err) {
         console.error("Failed to fetch backend health:", err);
@@ -142,21 +144,14 @@ const XRPLGlobe = () => {
 
   const flowStats = useMemo(() => {
     if (!transactions.length) {
-      return { avgXRP: 0, maxXRP: 0, arcCount: 0, endpointCount: 0 };
+      return { avgXRP: 0, maxXRP: 0 };
     }
     const amounts = transactions
       .map((tx) => Number(tx.amountXRP))
       .filter((v) => Number.isFinite(v));
-    const endpointCount = transactions.reduce((acc, tx) => {
-      const hasSource = Number.isFinite(tx.startLat) && Number.isFinite(tx.startLng);
-      const hasDest = Number.isFinite(tx.endLat) && Number.isFinite(tx.endLng);
-      return acc + (hasSource ? 1 : 0) + (hasDest ? 1 : 0);
-    }, 0);
     return {
       avgXRP: amounts.length ? amounts.reduce((acc, cur) => acc + cur, 0) / amounts.length : 0,
       maxXRP: amounts.length ? amounts.reduce((acc, cur) => Math.max(acc, cur), 0) : 0,
-      arcCount: transactions.filter((tx) => tx.hasArcGeo).length,
-      endpointCount,
     };
   }, [transactions]);
   const activityNodes = useMemo(() => {
@@ -184,6 +179,9 @@ const XRPLGlobe = () => {
     transactions.forEach((tx) => {
       addPoint(tx.startLat, tx.startLng, Number(tx.amountXRP), tx.id);
       addPoint(tx.endLat, tx.endLng, Number(tx.amountXRP), tx.id);
+      (tx.extraGeoPoints || []).forEach((point) => {
+        addPoint(point.latitude, point.longitude, Number(tx.amountXRP), tx.id);
+      });
     });
 
     return Array.from(buckets.values());
@@ -213,16 +211,13 @@ const XRPLGlobe = () => {
           Status: <span style={{ color: isConnected ? "#0f0" : "#f00" }}>{isConnected ? "LIVE" : "CONNECTING..."}</span>
         </p>
         <p>Mode: {mode === MODE.FLOW ? "Live Flow" : "Network Health"}</p>
-        <p>Validators: {validators.length}</p>
         <p>Mapped Validators: {mappedValidators.length}</p>
 
         {mode === MODE.FLOW && (
           <>
-            <p>Recent Txs: {transactions.length}</p>
-            <p>Mapped Arcs: {flowStats.arcCount}</p>
-            <p>Mapped Endpoints: {flowStats.endpointCount}</p>
             <p>Activity Cells: {activityNodes.length}</p>
             <p>Filter: Payments ≥ {minPaymentXRP.toLocaleString()} XRP</p>
+            <p>Recent Txs: {transactions.length}</p>
             <p>Avg Recent Tx: {flowStats.avgXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
             <p>Largest Recent Tx: {flowStats.maxXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP</p>
           </>
@@ -335,7 +330,7 @@ const XRPLGlobe = () => {
           <b>Regional Activity</b><br/>
           Tx endpoints: ${d.txCount}<br/>
           Flow: ${d.totalXRP.toLocaleString(undefined, { maximumFractionDigits: 2 })} XRP<br/>
-          Latest Tx: ${d.latestTxId}
+          Latest Tx: ${d.latestTxId || "N/A"}
         `}
       />
     </div>

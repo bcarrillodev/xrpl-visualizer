@@ -24,7 +24,7 @@ export function useNetworkHealth(url = 'http://localhost:8080/network-health') {
     };
 
     fetchHealth();
-    const id = setInterval(fetchHealth, 10000);
+    const id = setInterval(fetchHealth, 15000);
 
     return () => {
       isMounted = false;

@@ -15,6 +15,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const networkHealthStaleTTL = 15 * time.Minute
+
 // Server manages HTTP and WebSocket connections
 type Server struct {
 	router              *gin.Engine
@@ -29,6 +31,10 @@ type Server struct {
 	wsClients           map[*WSClient]bool
 	wsMu                sync.RWMutex
 	broadcast           chan *models.Transaction
+	wsClientBufferSize  int
+	networkHealthMu     sync.RWMutex
+	lastNetworkHealth   *models.ServerStatus
+	lastNetworkHealthAt time.Time
 }
 
 // WSClient represents a WebSocket client connection
@@ -45,10 +51,18 @@ func NewServer(
 	listenAddr string,
 	listenPort int,
 	corsAllowedOrigins []string,
+	broadcastBufferSize int,
+	wsClientBufferSize int,
 	logger *logrus.Logger,
 ) *Server {
 	if logger == nil {
 		logger = logrus.New()
+	}
+	if broadcastBufferSize <= 0 {
+		broadcastBufferSize = 256
+	}
+	if wsClientBufferSize <= 0 {
+		wsClientBufferSize = 256
 	}
 
 	gin.SetMode(gin.ReleaseMode)
@@ -63,7 +77,8 @@ func NewServer(
 		listenPort:          listenPort,
 		corsAllowedOrigins:  corsAllowedOrigins,
 		wsClients:           make(map[*WSClient]bool),
-		broadcast:           make(chan *models.Transaction, 256),
+		broadcast:           make(chan *models.Transaction, broadcastBufferSize),
+		wsClientBufferSize:  wsClientBufferSize,
 		wsUpgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -173,16 +188,35 @@ func (s *Server) handleNetworkHealth(c *gin.Context) {
 	serverStatus, err := s.validatorFetcher.GetServerStatus(ctx)
 	if err != nil {
 		s.logger.WithError(err).Warn("Failed to fetch network health")
+		if staleStatus, staleAt, ok := s.getCachedNetworkHealth(); ok {
+			c.JSON(http.StatusOK, gin.H{
+				"status":                      "degraded",
+				"server":                      staleStatus,
+				"stale":                       true,
+				"stale_age_seconds":           int(time.Since(staleAt).Seconds()),
+				"stale_ttl_seconds":           int(networkHealthStaleTTL.Seconds()),
+				"error":                       err.Error(),
+				"validators_count":            len(s.validatorFetcher.GetValidators()),
+				"transaction_listener_active": s.transactionListener.IsSubscribed(),
+				"websocket_clients":           len(s.wsClients),
+				"timestamp":                   time.Now().Unix(),
+			})
+			return
+		}
+
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"status": "degraded",
+			"stale":  false,
 			"error":  err.Error(),
 		})
 		return
 	}
+	s.cacheNetworkHealth(serverStatus)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":                      "ok",
 		"server":                      serverStatus,
+		"stale":                       false,
 		"validators_count":            len(s.validatorFetcher.GetValidators()),
 		"transaction_listener_active": s.transactionListener.IsSubscribed(),
 		"websocket_clients":           len(s.wsClients),
@@ -201,7 +235,7 @@ func (s *Server) handleTransactionsWebSocket(c *gin.Context) {
 
 	client := &WSClient{
 		conn:   conn,
-		send:   make(chan *models.Transaction, 256),
+		send:   make(chan *models.Transaction, s.wsClientBufferSize),
 		server: s,
 	}
 
@@ -253,6 +287,32 @@ func (s *Server) closeClient(client *WSClient) {
 	close(client.send)
 	client.conn.Close()
 	s.logger.WithField("client_addr", client.conn.RemoteAddr()).Info("WebSocket client disconnected")
+}
+
+func (s *Server) cacheNetworkHealth(status *models.ServerStatus) {
+	if status == nil {
+		return
+	}
+	copy := *status
+	s.networkHealthMu.Lock()
+	s.lastNetworkHealth = &copy
+	s.lastNetworkHealthAt = time.Now()
+	s.networkHealthMu.Unlock()
+}
+
+func (s *Server) getCachedNetworkHealth() (*models.ServerStatus, time.Time, bool) {
+	s.networkHealthMu.RLock()
+	defer s.networkHealthMu.RUnlock()
+
+	if s.lastNetworkHealth == nil || s.lastNetworkHealthAt.IsZero() {
+		return nil, time.Time{}, false
+	}
+	if time.Since(s.lastNetworkHealthAt) > networkHealthStaleTTL {
+		return nil, time.Time{}, false
+	}
+
+	copy := *s.lastNetworkHealth
+	return &copy, s.lastNetworkHealthAt, true
 }
 
 // readPump reads messages from the WebSocket client
