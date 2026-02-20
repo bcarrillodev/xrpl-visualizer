@@ -5,6 +5,7 @@ A Go service that fetches verified validators from the XRP Ledger mainnet and st
 ## Features
 
 - ✅ Fetches validator data from external XRPL endpoints
+- ✅ Uses external XRPL endpoints
 - ✅ Periodic validator caching with configurable refresh intervals
 - ✅ Real-time transaction streaming via WebSocket
 - ✅ GeoLite2 (MMDB) geolocation enrichment for validators and transaction accounts
@@ -24,7 +25,7 @@ A Go service that fetches verified validators from the XRP Ledger mainnet and st
 
 1. Clone and navigate to the service directory:
 ```bash
-cd xrpl-validator-service
+cd xrpl-service
 ```
 
 2. Copy environment configuration:
@@ -44,54 +45,15 @@ go build ./cmd/validator-service
 
 ### Docker Deployment
 
-1. Build the Docker image:
+1. Start with the included compose file:
 ```bash
-cd xrpl-validator-service
-docker build -t xrpl-validator-service .
+cd xrpl-service
+docker compose up --build
 ```
 
-2. Add to your `docker-compose.yml`:
-```yaml
-services:
-  go-validator-service:
-    build:
-      context: ./xrpl-validator-service
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-    environment:
-      PUBLIC_RIPPLED_JSON_RPC_URL: https://xrplcluster.com
-      PUBLIC_RIPPLED_WEBSOCKET_URL: wss://xrplcluster.com
-      TRANSACTION_JSON_RPC_URL: https://xrplcluster.com
-      TRANSACTION_WEBSOCKET_URL: wss://xrplcluster.com
-      XRPL_NETWORK: mainnet
-      LISTEN_PORT: 8080
-      LISTEN_ADDR: 0.0.0.0
-      VALIDATOR_REFRESH_INTERVAL: 300
-      VALIDATOR_LIST_SITES: https://vl.ripple.com,https://unl.xrplf.org
-      SECONDARY_VALIDATOR_REGISTRY_URL: https://api.xrpscan.com/api/v1/validatorregistry
-      VALIDATOR_METADATA_CACHE_PATH: data/validator-metadata-cache.json
-      NETWORK_HEALTH_JSON_RPC_URLS: https://xrplcluster.com,https://s2.ripple.com:51234
-      NETWORK_HEALTH_RETRIES: 2
-      GEO_CACHE_PATH: data/geolocation-cache.json
-      GEOLITE_DB_PATH: data/GeoLite2-City.mmdb
-      GEOLITE_DOWNLOAD_URL: https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb
-      GEOLITE_AUTO_DOWNLOAD: "true"
-      MIN_PAYMENT_DROPS: 1000000
-      TRANSACTION_BUFFER_SIZE: 2048
-      GEO_ENRICHMENT_QUEUE_SIZE: 2048
-      GEO_ENRICHMENT_WORKERS: 8
-      MAX_GEO_CANDIDATES: 6
-      BROADCAST_BUFFER_SIZE: 2048
-      WS_CLIENT_BUFFER_SIZE: 512
-      LOG_LEVEL: info
-    container_name: xrpl-validator-service
-    restart: unless-stopped
-```
-
-3. Run with docker-compose:
+2. Stop:
 ```bash
-docker-compose up
+docker compose down
 ```
 
 ## Configuration
@@ -100,8 +62,8 @@ Configure via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PUBLIC_RIPPLED_JSON_RPC_URL` | `https://xrplcluster.com` | External JSON-RPC endpoint used for validator/health fetches |
-| `PUBLIC_RIPPLED_WEBSOCKET_URL` | `wss://xrplcluster.com` | External WebSocket endpoint paired with validator source |
+| `PUBLIC_XRPL_JSON_RPC_URL` | `https://xrplcluster.com` | External JSON-RPC endpoint used for validator/health fetches |
+| `PUBLIC_XRPL_WEBSOCKET_URL` | `wss://xrplcluster.com` | External WebSocket endpoint paired with validator source |
 | `TRANSACTION_JSON_RPC_URL` | `https://xrplcluster.com` | External JSON-RPC endpoint used for transaction account/domain lookups |
 | `TRANSACTION_WEBSOCKET_URL` | `wss://xrplcluster.com` | External WebSocket endpoint used for live transaction stream subscription |
 | `XRPL_NETWORK` | `mainnet` | Network label returned with validator data |
@@ -220,7 +182,7 @@ ws.onclose = () => console.log('WebSocket closed');
 │ XRPL Validator Service                      │
 ├─────────────────────────────────────────────┤
 │ ├─ Config Management                        │
-│ ├─ rippled Client (JSON-RPC + WebSocket)    │
+│ ├─ External XRPL Client (JSON-RPC + WebSocket) │
 │ ├─ Validator Fetcher                        │
 │ │  ├─ Periodic fetching                     │
 │ │  ├─ In-memory caching                     │
@@ -241,7 +203,7 @@ ws.onclose = () => console.log('WebSocket closed');
 ## Project Structure
 
 ```
-xrpl-validator-service/
+xrpl-service/
 ├── cmd/
 │   └── validator-service/
 │       └── main.go           # Service entry point
@@ -250,8 +212,8 @@ xrpl-validator-service/
 │   │   └── config.go         # Configuration management
 │   ├── models/
 │   │   └── models.go         # Data models
-│   ├── rippled/
-│   │   └── client.go         # rippled client
+│   ├── xrpl/
+│   │   └── client.go         # XRPL client
 │   ├── geolocation/
 │   │   └── resolver.go       # GeoLite resolver + domain/IP/account cache
 │   ├── validator/
@@ -285,8 +247,8 @@ go build ./cmd/validator-service
 ### Running with Custom Config
 
 ```bash
-PUBLIC_RIPPLED_JSON_RPC_URL=https://xrplcluster.com \
-PUBLIC_RIPPLED_WEBSOCKET_URL=wss://xrplcluster.com \
+PUBLIC_XRPL_JSON_RPC_URL=https://xrplcluster.com \
+PUBLIC_XRPL_WEBSOCKET_URL=wss://xrplcluster.com \
 TRANSACTION_JSON_RPC_URL=https://xrplcluster.com \
 TRANSACTION_WEBSOCKET_URL=wss://xrplcluster.com \
 XRPL_NETWORK=mainnet \
@@ -311,20 +273,11 @@ LOG_LEVEL=debug \
 ./validator-service
 ```
 
-## Next Phases
-
-- [ ] Phase 8: Enhanced error handling and resilience (reconnection logic, circuit breakers)
-- [ ] Phase 10: Comprehensive unit tests
-- [ ] Phase 11: Frontend integration with Globe.GL
-- [ ] Validator transaction filtering and analytics
-- [ ] Metrics and monitoring (Prometheus integration)
-- [ ] Performance optimization
-
 ## Troubleshooting
 
 ### Connection refused to XRPL source
 
-- Check `PUBLIC_RIPPLED_JSON_RPC_URL`, `PUBLIC_RIPPLED_WEBSOCKET_URL`, `TRANSACTION_JSON_RPC_URL`, and `TRANSACTION_WEBSOCKET_URL`
+- Check `PUBLIC_XRPL_JSON_RPC_URL`, `PUBLIC_XRPL_WEBSOCKET_URL`, `TRANSACTION_JSON_RPC_URL`, and `TRANSACTION_WEBSOCKET_URL`
 - Verify outbound network connectivity from the service to external XRPL endpoints
 - Confirm endpoint health and that the URLs are reachable from your runtime environment
 
@@ -332,12 +285,12 @@ LOG_LEVEL=debug \
 
 - Verify the service has fetched data (check logs)
 - Verify `VALIDATOR_LIST_SITES` and `SECONDARY_VALIDATOR_REGISTRY_URL` are reachable from the service
-- Verify `PUBLIC_RIPPLED_JSON_RPC_URL` is reachable and serving `server_info`/`validators` requests
+- Verify `PUBLIC_XRPL_JSON_RPC_URL` is reachable and serving `server_info`/`validators` requests
 
 ### WebSocket clients not receiving transactions
 
 - Confirm transaction listener is subscribed (check health endpoint)
-- Verify rippled transaction stream is active
+- Verify XRPL transaction stream is active
 - Check firewall/network policies for WebSocket connections
 
 ### Validators have no mapped coordinates

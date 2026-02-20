@@ -1,0 +1,13 @@
+services:
+  xrpl-service:
+    container_name: xrpl-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env.example
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

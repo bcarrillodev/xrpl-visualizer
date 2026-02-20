@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/brandon/xrpl-validator-service/internal/models"
-	"github.com/brandon/xrpl-validator-service/internal/rippled"
+	"github.com/brandon/xrpl-validator-service/internal/xrpl"
 	"github.com/oschwald/geoip2-golang"
 	"github.com/sirupsen/logrus"
 )
@@ -216,7 +216,7 @@ func (r *Resolver) EnrichValidator(validator *models.Validator) error {
 
 // ResolveAccountGeo resolves a transaction account to geolocation by reading the
 // account domain from XRPL and then resolving that domain through GeoLite.
-func (r *Resolver) ResolveAccountGeo(ctx context.Context, client rippled.RippledClient, account string) (*models.GeoLocation, error) {
+func (r *Resolver) ResolveAccountGeo(ctx context.Context, client xrpl.NodeClient, account string) (*models.GeoLocation, error) {
 	account = strings.TrimSpace(account)
 	if account == "" {
 		return nil, nil
@@ -230,7 +230,7 @@ func (r *Resolver) ResolveAccountGeo(ctx context.Context, client rippled.Rippled
 		return nil, nil
 	}
 	if client == nil {
-		return nil, fmt.Errorf("rippled client is nil")
+		return nil, fmt.Errorf("XRPL client is nil")
 	}
 
 	domain, err := fetchAccountDomain(ctx, client, account)
@@ -355,7 +355,7 @@ func pickIP(ips []net.IP) string {
 	return ips[0].String()
 }
 
-func fetchAccountDomain(ctx context.Context, client rippled.RippledClient, account string) (string, error) {
+func fetchAccountDomain(ctx context.Context, client xrpl.NodeClient, account string) (string, error) {
 	resp, err := client.Command(ctx, "account_info", map[string]interface{}{
 		"account":      account,
 		"ledger_index": "validated",

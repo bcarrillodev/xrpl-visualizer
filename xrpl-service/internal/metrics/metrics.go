@@ -80,11 +80,11 @@ var (
 		[]string{"status"},
 	)
 
-	// Rippled client metrics
-	RippledCommandTotal = promauto.NewCounterVec(
+	// XRPL upstream client metrics
+	UpstreamCommandTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "xrpl_validator_rippled_command_total",
-			Help: "Total number of rippled commands",
+			Name: "xrpl_validator_upstream_command_total",
+			Help: "Total number of XRPL commands",
 		},
 		[]string{"method", "status"},
 	)

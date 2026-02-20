@@ -14,11 +14,11 @@ func TestNewConfig(t *testing.T) {
 	if cfg.ListenAddr != "0.0.0.0" {
 		t.Errorf("Expected ListenAddr '0.0.0.0', got %s", cfg.ListenAddr)
 	}
-	if cfg.PublicRippledJSONRPCURL != "https://xrplcluster.com" {
-		t.Errorf("Expected PublicRippledJSONRPCURL 'https://xrplcluster.com', got %s", cfg.PublicRippledJSONRPCURL)
+	if cfg.PublicXRPLJSONRPCURL != "https://xrplcluster.com" {
+		t.Errorf("Expected PublicXRPLJSONRPCURL 'https://xrplcluster.com', got %s", cfg.PublicXRPLJSONRPCURL)
 	}
-	if cfg.PublicRippledWebSocketURL != "wss://xrplcluster.com" {
-		t.Errorf("Expected PublicRippledWebSocketURL 'wss://xrplcluster.com', got %s", cfg.PublicRippledWebSocketURL)
+	if cfg.PublicXRPLWebSocketURL != "wss://xrplcluster.com" {
+		t.Errorf("Expected PublicXRPLWebSocketURL 'wss://xrplcluster.com', got %s", cfg.PublicXRPLWebSocketURL)
 	}
 	if cfg.TransactionJSONRPCURL != "https://xrplcluster.com" {
 		t.Errorf("Expected TransactionJSONRPCURL 'https://xrplcluster.com', got %s", cfg.TransactionJSONRPCURL)
@@ -112,8 +112,8 @@ func TestNewConfig(t *testing.T) {
 func TestNewConfigWithEnvVars(t *testing.T) {
 	os.Setenv("LISTEN_PORT", "9090")
 	os.Setenv("LISTEN_ADDR", "127.0.0.1")
-	os.Setenv("PUBLIC_RIPPLED_JSON_RPC_URL", "https://public.example")
-	os.Setenv("PUBLIC_RIPPLED_WEBSOCKET_URL", "wss://public.example")
+	os.Setenv("PUBLIC_XRPL_JSON_RPC_URL", "https://public.example")
+	os.Setenv("PUBLIC_XRPL_WEBSOCKET_URL", "wss://public.example")
 	os.Setenv("TRANSACTION_JSON_RPC_URL", "https://txrpc.example")
 	os.Setenv("TRANSACTION_WEBSOCKET_URL", "wss://txws.example")
 	os.Setenv("XRPL_NETWORK", "testnet")
@@ -140,8 +140,8 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 	defer func() {
 		os.Unsetenv("LISTEN_PORT")
 		os.Unsetenv("LISTEN_ADDR")
-		os.Unsetenv("PUBLIC_RIPPLED_JSON_RPC_URL")
-		os.Unsetenv("PUBLIC_RIPPLED_WEBSOCKET_URL")
+		os.Unsetenv("PUBLIC_XRPL_JSON_RPC_URL")
+		os.Unsetenv("PUBLIC_XRPL_WEBSOCKET_URL")
 		os.Unsetenv("TRANSACTION_JSON_RPC_URL")
 		os.Unsetenv("TRANSACTION_WEBSOCKET_URL")
 		os.Unsetenv("XRPL_NETWORK")
@@ -173,11 +173,11 @@ func TestNewConfigWithEnvVars(t *testing.T) {
 	if cfg.ListenAddr != "127.0.0.1" {
 		t.Errorf("Expected ListenAddr '127.0.0.1', got %s", cfg.ListenAddr)
 	}
-	if cfg.PublicRippledJSONRPCURL != "https://public.example" {
-		t.Errorf("Expected PublicRippledJSONRPCURL 'https://public.example', got %s", cfg.PublicRippledJSONRPCURL)
+	if cfg.PublicXRPLJSONRPCURL != "https://public.example" {
+		t.Errorf("Expected PublicXRPLJSONRPCURL 'https://public.example', got %s", cfg.PublicXRPLJSONRPCURL)
 	}
-	if cfg.PublicRippledWebSocketURL != "wss://public.example" {
-		t.Errorf("Expected PublicRippledWebSocketURL 'wss://public.example', got %s", cfg.PublicRippledWebSocketURL)
+	if cfg.PublicXRPLWebSocketURL != "wss://public.example" {
+		t.Errorf("Expected PublicXRPLWebSocketURL 'wss://public.example', got %s", cfg.PublicXRPLWebSocketURL)
 	}
 	if cfg.TransactionJSONRPCURL != "https://txrpc.example" {
 		t.Errorf("Expected TransactionJSONRPCURL 'https://txrpc.example', got %s", cfg.TransactionJSONRPCURL)
@@ -239,8 +239,8 @@ func validConfig() *Config {
 	return &Config{
 		ListenPort:                    8080,
 		ListenAddr:                    "0.0.0.0",
-		PublicRippledJSONRPCURL:       "https://xrplcluster.com",
-		PublicRippledWebSocketURL:     "wss://xrplcluster.com",
+		PublicXRPLJSONRPCURL:          "https://xrplcluster.com",
+		PublicXRPLWebSocketURL:        "wss://xrplcluster.com",
 		TransactionJSONRPCURL:         "https://xrplcluster.com",
 		TransactionWebSocketURL:       "wss://xrplcluster.com",
 		Network:                       "mainnet",
@@ -272,8 +272,8 @@ func TestConfigValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "valid config", mutate: func(*Config) {}, wantErr: false},
-		{name: "empty public rpc", mutate: func(c *Config) { c.PublicRippledJSONRPCURL = "" }, wantErr: true},
-		{name: "empty public ws", mutate: func(c *Config) { c.PublicRippledWebSocketURL = "" }, wantErr: true},
+		{name: "empty public rpc", mutate: func(c *Config) { c.PublicXRPLJSONRPCURL = "" }, wantErr: true},
+		{name: "empty public ws", mutate: func(c *Config) { c.PublicXRPLWebSocketURL = "" }, wantErr: true},
 		{name: "empty transaction rpc", mutate: func(c *Config) { c.TransactionJSONRPCURL = "" }, wantErr: true},
 		{name: "empty transaction ws", mutate: func(c *Config) { c.TransactionWebSocketURL = "" }, wantErr: true},
 		{name: "empty network", mutate: func(c *Config) { c.Network = "" }, wantErr: true},

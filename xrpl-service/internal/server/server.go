@@ -186,7 +186,7 @@ func (s *Server) handleGetValidators(c *gin.Context) {
 	})
 }
 
-// handleNetworkHealth returns rippled consensus health data for visualization mode.
+// handleNetworkHealth returns XRPL consensus health data for visualization mode.
 func (s *Server) handleNetworkHealth(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 	defer cancel()

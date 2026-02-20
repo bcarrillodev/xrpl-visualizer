@@ -1,4 +1,4 @@
-package rippled
+package xrpl
 
 import (
 	"bytes"
@@ -14,9 +14,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// RippledClient defines the interface for rippled interactions
-type RippledClient interface {
-	// Connect establishes connection to rippled
+// NodeClient defines the interface for XRPL interactions
+type NodeClient interface {
+	// Connect establishes connection to XRPL
 	Connect(ctx context.Context) error
 
 	// Close closes the connection
@@ -41,7 +41,7 @@ type RippledClient interface {
 	GetServerInfo(ctx context.Context) (interface{}, error)
 }
 
-// Client implements RippledClient
+// Client implements NodeClient
 type Client struct {
 	jsonRPCURL     string
 	websocketURL   string
@@ -56,7 +56,7 @@ type Client struct {
 	backoffTime    time.Duration
 }
 
-// NewClient creates a new rippled client
+// NewClient creates a new XRPL client
 func NewClient(jsonRPCURL, websocketURL string, logger *logrus.Logger) *Client {
 	if logger == nil {
 		logger = logrus.New()
@@ -72,7 +72,7 @@ func NewClient(jsonRPCURL, websocketURL string, logger *logrus.Logger) *Client {
 	}
 }
 
-// Connect establishes WebSocket connection to rippled
+// Connect establishes WebSocket connection to XRPL
 func (c *Client) Connect(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -83,14 +83,14 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	conn, _, err := dialer.DialContext(ctx, c.websocketURL, nil)
 	if err != nil {
-		c.logger.WithError(err).Error("Failed to connect to rippled WebSocket")
+		c.logger.WithError(err).Error("Failed to connect to XRPL WebSocket")
 		return err
 	}
 
 	c.wsConn = conn
 	c.connected = true
 	c.reconnectCount = 0
-	c.logger.Info("Connected to rippled WebSocket")
+	c.logger.Info("Connected to XRPL WebSocket")
 
 	// Start read loop for handling incoming messages
 	go c.readLoop()
@@ -158,12 +158,12 @@ func (c *Client) Command(ctx context.Context, method string, params interface{})
 	return result, nil
 }
 
-// Subscribe subscribes to rippled streams
+// Subscribe subscribes to XRPL streams
 func (c *Client) Subscribe(ctx context.Context, streams []string, callback func(interface{})) error {
 	c.mu.RLock()
 	if !c.connected || c.wsConn == nil {
 		c.mu.RUnlock()
-		return fmt.Errorf("not connected to rippled")
+		return fmt.Errorf("not connected to XRPL")
 	}
 	c.mu.RUnlock()
 
@@ -192,7 +192,7 @@ func (c *Client) Unsubscribe(ctx context.Context, streams []string) error {
 	c.mu.RLock()
 	if !c.connected || c.wsConn == nil {
 		c.mu.RUnlock()
-		return fmt.Errorf("not connected to rippled")
+		return fmt.Errorf("not connected to XRPL")
 	}
 	c.mu.RUnlock()
 

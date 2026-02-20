@@ -11,10 +11,10 @@ import (
 	"github.com/brandon/xrpl-validator-service/internal/config"
 	"github.com/brandon/xrpl-validator-service/internal/geolocation"
 	"github.com/brandon/xrpl-validator-service/internal/metrics"
-	"github.com/brandon/xrpl-validator-service/internal/rippled"
 	"github.com/brandon/xrpl-validator-service/internal/server"
 	"github.com/brandon/xrpl-validator-service/internal/transaction"
 	"github.com/brandon/xrpl-validator-service/internal/validator"
+	"github.com/brandon/xrpl-validator-service/internal/xrpl"
 	"github.com/sirupsen/logrus"
 )
 
@@ -37,8 +37,8 @@ func main() {
 	logger.SetLevel(logLevel)
 
 	logger.WithFields(logrus.Fields{
-		"validator_json_rpc":  cfg.PublicRippledJSONRPCURL,
-		"validator_websocket": cfg.PublicRippledWebSocketURL,
+		"validator_json_rpc":  cfg.PublicXRPLJSONRPCURL,
+		"validator_websocket": cfg.PublicXRPLWebSocketURL,
 		"tx_json_rpc":         cfg.TransactionJSONRPCURL,
 		"tx_websocket":        cfg.TransactionWebSocketURL,
 		"tx_buffer_size":      cfg.TransactionBufferSize,
@@ -53,8 +53,8 @@ func main() {
 		"listen_port":         cfg.ListenPort,
 	}).Info("XRPL Validator Service starting")
 
-	validatorClient := rippled.NewClient(cfg.PublicRippledJSONRPCURL, cfg.PublicRippledWebSocketURL, logger)
-	txClient := rippled.NewClient(cfg.TransactionJSONRPCURL, cfg.TransactionWebSocketURL, logger)
+	validatorClient := xrpl.NewClient(cfg.PublicXRPLJSONRPCURL, cfg.PublicXRPLWebSocketURL, logger)
+	txClient := xrpl.NewClient(cfg.TransactionJSONRPCURL, cfg.TransactionWebSocketURL, logger)
 	appCtx, appCancel := context.WithCancel(context.Background())
 	defer appCancel()
 
@@ -151,7 +151,7 @@ func main() {
 		logger.WithError(err).Error("Error stopping HTTP server")
 	}
 
-	// Close rippled clients
+	// Close XRPL clients
 	if err := validatorClient.Close(); err != nil {
 		logger.WithError(err).Error("Error closing validator source client")
 	}

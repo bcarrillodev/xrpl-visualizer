@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/brandon/xrpl-validator-service/internal/models"
-	"github.com/brandon/xrpl-validator-service/internal/rippled"
+	"github.com/brandon/xrpl-validator-service/internal/xrpl"
 	"github.com/sirupsen/logrus"
 )
 
@@ -65,7 +65,7 @@ const validatorMetadataCacheVersion = 1
 
 // Fetcher handles validator data retrieval and caching
 type Fetcher struct {
-	client               rippled.RippledClient
+	client               xrpl.NodeClient
 	logger               *logrus.Logger
 	httpClient           *http.Client
 	mu                   sync.RWMutex
@@ -96,7 +96,7 @@ type GeoLocationProvider interface {
 
 // NewFetcher creates a new validator fetcher
 func NewFetcher(
-	client rippled.RippledClient,
+	client xrpl.NodeClient,
 	refreshInterval time.Duration,
 	geoProvider GeoLocationProvider,
 	validatorListSites []string,
@@ -202,11 +202,11 @@ func (f *Fetcher) Stop() {
 	close(f.stopChan)
 }
 
-// Fetch retrieves current validators from rippled
+// Fetch retrieves current validators from XRPL
 func (f *Fetcher) Fetch(ctx context.Context) error {
-	f.logger.Debug("Fetching validators from rippled")
+	f.logger.Debug("Fetching validators from XRPL")
 
-	// Query rippled for validator information
+	// Query XRPL for validator information
 	// Using ledger_closed subscription to get updated validator set
 	result, err := f.fetchValidatorList(ctx)
 	if err != nil {
@@ -218,9 +218,9 @@ func (f *Fetcher) Fetch(ctx context.Context) error {
 		return fmt.Errorf("failed to parse validators: %w", err)
 	}
 
-	trustedValidators, trustedSet, err := f.fetchTrustedValidatorsFromRippled(ctx)
+	trustedValidators, trustedSet, err := f.fetchTrustedValidatorsFromXRPL(ctx)
 	if err != nil {
-		f.logger.WithError(err).Warn("Failed to fetch trusted validators from rippled")
+		f.logger.WithError(err).Warn("Failed to fetch trusted validators from XRPL")
 	}
 	validators = mergeValidators(validators, trustedValidators)
 
@@ -344,7 +344,7 @@ func (f *Fetcher) GetLastUpdate() time.Time {
 	return f.lastUpdate
 }
 
-// GetServerStatus retrieves current rippled server health information.
+// GetServerStatus retrieves current XRPL server health information.
 func (f *Fetcher) GetServerStatus(ctx context.Context) (*models.ServerStatus, error) {
 	var endpointErrors []string
 	for _, endpoint := range f.networkHealthRPCURLs {
@@ -481,7 +481,7 @@ func getInt64(parent map[string]interface{}, key string) int64 {
 	}
 }
 
-// fetchValidatorList queries rippled for validator data
+// fetchValidatorList queries XRPL for validator data
 func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 	var lastErr error
 	maxRetries := 3
@@ -610,7 +610,7 @@ func (f *Fetcher) fetchValidatorList(ctx context.Context) (interface{}, error) {
 	return nil, fmt.Errorf("failed after %d attempts: %w", maxRetries, lastErr)
 }
 
-func (f *Fetcher) fetchTrustedValidatorsFromRippled(ctx context.Context) ([]*models.Validator, map[string]struct{}, error) {
+func (f *Fetcher) fetchTrustedValidatorsFromXRPL(ctx context.Context) ([]*models.Validator, map[string]struct{}, error) {
 	resp, err := f.client.Command(ctx, "validators", map[string]interface{}{})
 	if err != nil {
 		return nil, nil, err

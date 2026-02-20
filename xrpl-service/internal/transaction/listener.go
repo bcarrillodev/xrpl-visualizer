@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/brandon/xrpl-validator-service/internal/models"
-	"github.com/brandon/xrpl-validator-service/internal/rippled"
+	"github.com/brandon/xrpl-validator-service/internal/xrpl"
 	"github.com/sirupsen/logrus"
 )
 
@@ -24,12 +24,12 @@ const xrplBase58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrst
 
 // AccountGeoResolver resolves XRPL accounts to geolocation.
 type AccountGeoResolver interface {
-	ResolveAccountGeo(ctx context.Context, client rippled.RippledClient, account string) (*models.GeoLocation, error)
+	ResolveAccountGeo(ctx context.Context, client xrpl.NodeClient, account string) (*models.GeoLocation, error)
 }
 
 // Listener handles transaction stream subscriptions and callbacks
 type Listener struct {
-	client            rippled.RippledClient
+	client            xrpl.NodeClient
 	logger            *logrus.Logger
 	mu                sync.RWMutex
 	callbacks         []TransactionCallback
@@ -57,7 +57,7 @@ type TransactionCallback func(*models.Transaction)
 
 // NewListener creates a new transaction listener
 func NewListener(
-	client rippled.RippledClient,
+	client xrpl.NodeClient,
 	minPaymentDrops int64,
 	geoResolver AccountGeoResolver,
 	logger *logrus.Logger,
@@ -120,12 +120,12 @@ func (l *Listener) Start(ctx context.Context) error {
 	}
 	l.mu.Unlock()
 	if l.client == nil {
-		return fmt.Errorf("rippled client is nil")
+		return fmt.Errorf("XRPL client is nil")
 	}
 
 	if !l.client.IsConnected() {
 		if err := l.client.Connect(ctx); err != nil {
-			return fmt.Errorf("failed to connect to rippled websocket: %w", err)
+			return fmt.Errorf("failed to connect to XRPL websocket: %w", err)
 		}
 	}
 
@@ -175,7 +175,7 @@ func (l *Listener) Stop(ctx context.Context) error {
 	return nil
 }
 
-// handleMessage processes incoming WebSocket messages from rippled
+// handleMessage processes incoming WebSocket messages from XRPL
 func (l *Listener) handleMessage(msg interface{}) {
 	msgMap, ok := msg.(map[string]interface{})
 	if !ok {

@@ -59,7 +59,7 @@ type GeoLocation struct {
 	ValidatorAddress string  `json:"validator_address,omitempty"`
 }
 
-// ServerStatus represents rippled server health status
+// ServerStatus represents XRPL server health status
 type ServerStatus struct {
 	Connected       bool   `json:"connected"`
 	ServerState     string `json:"server_state"`

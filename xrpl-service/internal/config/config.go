@@ -10,8 +10,8 @@ import (
 
 type Config struct {
 	// External XRPL source configuration
-	PublicRippledJSONRPCURL   string
-	PublicRippledWebSocketURL string
+	PublicXRPLJSONRPCURL   string
+	PublicXRPLWebSocketURL string
 
 	// Transaction Stream Source (external by default)
 	TransactionJSONRPCURL   string
@@ -53,12 +53,12 @@ type Config struct {
 func NewConfig() *Config {
 	corsOrigins := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173")
 	validatorListSites := getEnv("VALIDATOR_LIST_SITES", "https://vl.ripple.com,https://unl.xrplf.org")
-	publicJSONRPCURL := getEnv("PUBLIC_RIPPLED_JSON_RPC_URL", "https://xrplcluster.com")
-	publicWebSocketURL := getEnv("PUBLIC_RIPPLED_WEBSOCKET_URL", "wss://xrplcluster.com")
+	publicJSONRPCURL := getEnv("PUBLIC_XRPL_JSON_RPC_URL", "https://xrplcluster.com")
+	publicWebSocketURL := getEnv("PUBLIC_XRPL_WEBSOCKET_URL", "wss://xrplcluster.com")
 	networkHealthJSONRPCURLs := getEnv("NETWORK_HEALTH_JSON_RPC_URLS", publicJSONRPCURL+",https://s2.ripple.com:51234")
 	cfg := &Config{
-		PublicRippledJSONRPCURL:       publicJSONRPCURL,
-		PublicRippledWebSocketURL:     publicWebSocketURL,
+		PublicXRPLJSONRPCURL:          publicJSONRPCURL,
+		PublicXRPLWebSocketURL:        publicWebSocketURL,
 		TransactionJSONRPCURL:         getEnv("TRANSACTION_JSON_RPC_URL", publicJSONRPCURL),
 		TransactionWebSocketURL:       getEnv("TRANSACTION_WEBSOCKET_URL", publicWebSocketURL),
 		Network:                       strings.ToLower(getEnv("XRPL_NETWORK", "mainnet")),
@@ -161,11 +161,11 @@ func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
 		return fmt.Errorf("listen address cannot be empty")
 	}
-	if c.PublicRippledJSONRPCURL == "" {
-		return fmt.Errorf("public rippled JSON RPC URL cannot be empty")
+	if c.PublicXRPLJSONRPCURL == "" {
+		return fmt.Errorf("public XRPL JSON RPC URL cannot be empty")
 	}
-	if c.PublicRippledWebSocketURL == "" {
-		return fmt.Errorf("public rippled WebSocket URL cannot be empty")
+	if c.PublicXRPLWebSocketURL == "" {
+		return fmt.Errorf("public XRPL WebSocket URL cannot be empty")
 	}
 	if c.TransactionJSONRPCURL == "" {
 		return fmt.Errorf("transaction JSON RPC URL cannot be empty")

@@ -5,14 +5,14 @@ import (
 	"testing"
 
 	"github.com/brandon/xrpl-validator-service/internal/models"
-	"github.com/brandon/xrpl-validator-service/internal/rippled"
+	"github.com/brandon/xrpl-validator-service/internal/xrpl"
 )
 
 type mockGeoResolver struct {
 	locations map[string]*models.GeoLocation
 }
 
-func (m *mockGeoResolver) ResolveAccountGeo(ctx context.Context, client rippled.RippledClient, account string) (*models.GeoLocation, error) {
+func (m *mockGeoResolver) ResolveAccountGeo(ctx context.Context, client xrpl.NodeClient, account string) (*models.GeoLocation, error) {
 	if geo, ok := m.locations[account]; ok {
 		return geo, nil
 	}

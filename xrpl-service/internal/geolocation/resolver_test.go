@@ -13,21 +13,21 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type stubRippledClient struct {
+type stubXRPLClient struct {
 	commandCalls int
 	commandFunc  func(method string, params interface{}) (interface{}, error)
 }
 
-func (s *stubRippledClient) Connect(ctx context.Context) error { return nil }
-func (s *stubRippledClient) Close() error                      { return nil }
-func (s *stubRippledClient) IsConnected() bool                 { return true }
-func (s *stubRippledClient) Subscribe(ctx context.Context, streams []string, callback func(interface{})) error {
+func (s *stubXRPLClient) Connect(ctx context.Context) error { return nil }
+func (s *stubXRPLClient) Close() error                      { return nil }
+func (s *stubXRPLClient) IsConnected() bool                 { return true }
+func (s *stubXRPLClient) Subscribe(ctx context.Context, streams []string, callback func(interface{})) error {
 	return nil
 }
-func (s *stubRippledClient) Unsubscribe(ctx context.Context, streams []string) error { return nil }
-func (s *stubRippledClient) GetValidators(ctx context.Context) (interface{}, error)  { return nil, nil }
-func (s *stubRippledClient) GetServerInfo(ctx context.Context) (interface{}, error)  { return nil, nil }
-func (s *stubRippledClient) Command(ctx context.Context, method string, params interface{}) (interface{}, error) {
+func (s *stubXRPLClient) Unsubscribe(ctx context.Context, streams []string) error { return nil }
+func (s *stubXRPLClient) GetValidators(ctx context.Context) (interface{}, error)  { return nil, nil }
+func (s *stubXRPLClient) GetServerInfo(ctx context.Context) (interface{}, error)  { return nil, nil }
+func (s *stubXRPLClient) Command(ctx context.Context, method string, params interface{}) (interface{}, error) {
 	s.commandCalls++
 	if s.commandFunc == nil {
 		return nil, errors.New("stub command func not set")
@@ -114,7 +114,7 @@ func TestResolveAccountGeoCachesAccountLookup(t *testing.T) {
 		}, nil
 	}
 
-	client := &stubRippledClient{
+	client := &stubXRPLClient{
 		commandFunc: func(method string, params interface{}) (interface{}, error) {
 			if method != "account_info" {
 				t.Fatalf("unexpected method: %s", method)
@@ -164,7 +164,7 @@ func TestResolveAccountGeoCachesMissingDomain(t *testing.T) {
 		return nil, nil
 	}
 
-	client := &stubRippledClient{
+	client := &stubXRPLClient{
 		commandFunc: func(method string, params interface{}) (interface{}, error) {
 			return map[string]interface{}{
 				"result": map[string]interface{}{
